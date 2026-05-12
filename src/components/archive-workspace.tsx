@@ -318,7 +318,7 @@ export function ArchiveWorkspace() {
   ].filter((command) => command.toLowerCase().includes(commandQuery.toLowerCase()));
 
   return (
-    <main className="h-screen overflow-hidden p-3 text-foreground">
+    <main className="h-[100dvh] overflow-hidden p-2 text-foreground lg:p-3">
       <input
         ref={fileInputRef}
         type="file"
@@ -327,8 +327,8 @@ export function ArchiveWorkspace() {
         className="hidden"
         onChange={(event) => importBrowserFiles(event.target.files)}
       />
-      <div className="grid h-full grid-cols-[280px_minmax(560px,1fr)_320px] overflow-hidden rounded-lg border bg-panel/92 shadow-soft-panel backdrop-blur">
-        <aside className="flex min-w-0 flex-col border-r bg-panel">
+      <div className="grid h-full min-h-0 grid-cols-[280px_minmax(560px,1fr)_320px] overflow-hidden rounded-lg border bg-panel/92 shadow-soft-panel backdrop-blur">
+        <aside className="flex min-h-0 min-w-0 flex-col border-r bg-panel">
           <div className="flex h-14 items-center gap-3 border-b px-4">
             <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <Archive className="h-5 w-5" />
@@ -340,6 +340,9 @@ export function ArchiveWorkspace() {
           </div>
 
           <div className="border-b p-3">
+            <div className="mb-3 rounded-md border border-primary/25 bg-primary/10 px-3 py-2 text-xs leading-5 text-primary">
+              Local-first. No telemetry. Private archives stay outside Git.
+            </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
@@ -419,14 +422,10 @@ export function ArchiveWorkspace() {
             </SidebarSection>
           </nav>
 
-          <div className="border-t p-3">
-            <p className="text-xs leading-5 text-muted-foreground">
-              Local-first. No telemetry. Raw archives stay outside Git.
-            </p>
-          </div>
+          <div className="border-t px-3 py-2 text-xs text-muted-foreground">Storage paths are ignored by Git.</div>
         </aside>
 
-        <section className="flex min-w-0 flex-col">
+        <section className="flex min-h-0 min-w-0 flex-col">
           <header className="flex h-14 items-center justify-between border-b bg-panel-strong px-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -534,7 +533,7 @@ export function ArchiveWorkspace() {
           </div>
         </section>
 
-        <aside className="flex min-w-0 flex-col border-l bg-panel">
+        <aside className="flex min-h-0 min-w-0 flex-col border-l bg-panel">
           <div className="flex h-14 items-center justify-between border-b px-4">
             <h2 className="text-sm font-semibold">Inspector</h2>
             <Button variant="ghost" size="icon" title="Settings" onClick={() => setModal("settings")}>
@@ -552,6 +551,12 @@ export function ArchiveWorkspace() {
                 <Code2 className="h-4 w-4" />
                 Inspect code
               </Button>
+            </InspectorSection>
+
+            <InspectorSection title="Repository Safety" icon={GitBranch}>
+              <div className="rounded-md border border-primary/25 bg-primary/10 p-3 text-sm leading-6 text-primary">
+                Raw archives, databases, exports, backups, and embeddings are ignored by Git by default.
+              </div>
             </InspectorSection>
 
             <InspectorSection title="Metadata" icon={FileJson}>
@@ -582,11 +587,6 @@ export function ArchiveWorkspace() {
               </Button>
             </InspectorSection>
 
-            <InspectorSection title="Repository Safety" icon={GitBranch}>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Raw archives, databases, exports, backups, and embeddings are ignored by Git by default.
-              </p>
-            </InspectorSection>
           </div>
         </aside>
       </div>
