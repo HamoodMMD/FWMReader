@@ -29,6 +29,7 @@ import {
   Sun,
   Tags,
   TerminalSquare,
+  Trash2,
   Upload,
   X
 } from "lucide-react";
@@ -41,6 +42,12 @@ import { cn } from "@/lib/utils";
 
 type ViewName = "Recent" | "Timeline" | "Tags" | "Code Explorer" | "Backups";
 type ModalName = "import" | "watch" | "settings" | "backup" | "export" | null;
+
+interface ConversationMessage {
+  role: string;
+  time: string;
+  body: string;
+}
 
 interface DemoConversation {
   id: string;
@@ -55,6 +62,7 @@ interface DemoConversation {
   excerpt: string;
   imported?: boolean;
   rawPreview?: string;
+  messages?: ConversationMessage[];
 }
 
 interface CodeSnippet {
@@ -64,6 +72,12 @@ interface CodeSnippet {
   language: string;
   code: string;
   source: string;
+}
+
+interface ExtractedEntity {
+  id: string;
+  type: "file" | "link" | "command";
+  label: string;
 }
 
 const seedConversations: DemoConversation[] = [
@@ -181,11 +195,6 @@ const messages = [
   }
 ];
 
-const timeline = [
-  { year: "2026", month: "May", days: ["2026-05-12", "2026-05-11", "2026-05-10"] },
-  { year: "2026", month: "April", days: ["2026-04-28", "2026-04-14"] }
-];
-
 export function ArchiveWorkspace() {
   const [conversations, setConversations] = useState(seedConversations);
   const [selectedConversationId, setSelectedConversationId] = useState(seedConversations[0].id);
@@ -211,19 +220,16 @@ export function ArchiveWorkspace() {
   const codeSnippets = useMemo(() => {
     const importedSnippets = conversations
       .filter((conversation) => conversation.imported && conversation.code > 0)
-      .map<CodeSnippet>((conversation) => ({
-        id: `imported-${conversation.id}`,
-        conversationId: conversation.id,
-        title: `${conversation.title} code preview`,
-        language: "text",
-        source: conversation.title,
-        code: conversation.rawPreview ?? "Imported JSON preview"
-      }));
+      .flatMap((conversation) =>
+        extractCodeSnippetsFromText(conversation.rawPreview ?? "", conversation.id, conversation.title)
+      );
 
     return [...seedSnippets, ...importedSnippets];
   }, [conversations]);
 
   const selectedSnippet = codeSnippets.find((snippet) => snippet.id === selectedSnippetId) ?? codeSnippets[0];
+  const selectedEntities = useMemo(() => extractEntities(selectedConversation), [selectedConversation]);
+  const timelineGroups = useMemo(() => buildTimelineGroups(conversations), [conversations]);
 
   const filteredConversations = useMemo(() => {
     let results = conversations;
@@ -305,6 +311,18 @@ export function ArchiveWorkspace() {
     notify("Downloaded 2026-May-All-Chats.md");
   }
 
+  function removeSelectedConversation() {
+    if (conversations.length <= 1) {
+      notify("Keep at least one conversation in the archive preview");
+      return;
+    }
+
+    const nextConversations = conversations.filter((conversation) => conversation.id !== selectedConversation.id);
+    setConversations(nextConversations);
+    setSelectedConversationId(nextConversations[0].id);
+    notify(`Removed ${selectedConversation.title} from the app preview`);
+  }
+
   async function copySelectedSnippet() {
     await navigator.clipboard?.writeText(selectedSnippet.code);
     notify("Snippet copied");
@@ -378,7 +396,7 @@ export function ArchiveWorkspace() {
             </SidebarSection>
 
             <SidebarSection title="Timeline">
-              {timeline.map((year) => {
+              {timelineGroups.map((year) => {
                 const key = `${year.year}-${year.month}`;
                 return (
                   <div key={key} className="mb-3">
@@ -386,11 +404,11 @@ export function ArchiveWorkspace() {
                       className="mb-1 flex w-full items-center gap-1 rounded-sm px-1 py-1 text-left text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                       onClick={() => setExpandedTimeline((current) => ({ ...current, [key]: !current[key] }))}
                     >
-                      <ChevronDown className={cn("h-3 w-3 transition-transform", !expandedTimeline[key] && "-rotate-90")} />
+                      <ChevronDown className={cn("h-3 w-3 transition-transform", (expandedTimeline[key] ?? true) === false && "-rotate-90")} />
                       {year.year} / {year.month}
                     </button>
                     <AnimatePresence initial={false}>
-                      {expandedTimeline[key] ? (
+                      {(expandedTimeline[key] ?? true) ? (
                         <motion.div
                           className="space-y-1 overflow-hidden pl-4"
                           initial={{ height: 0, opacity: 0 }}
@@ -438,6 +456,9 @@ export function ArchiveWorkspace() {
               </p>
             </div>
             <div className="flex items-center gap-1">
+              <Button variant="ghost" size="icon" title="Remove from app" onClick={removeSelectedConversation}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
@@ -551,6 +572,10 @@ export function ArchiveWorkspace() {
                 <Code2 className="h-4 w-4" />
                 Inspect code
               </Button>
+              <Button variant="outline" className="w-full justify-start" onClick={removeSelectedConversation}>
+                <Trash2 className="h-4 w-4" />
+                Remove from app
+              </Button>
             </InspectorSection>
 
             <InspectorSection title="Repository Safety" icon={GitBranch}>
@@ -568,9 +593,14 @@ export function ArchiveWorkspace() {
             </InspectorSection>
 
             <InspectorSection title="Extracted Entities" icon={Sparkles}>
-              <EntityPill icon={Files} label="src/server/import/import-service.ts" onClick={() => notify("File reference selected")} />
-              <EntityPill icon={Link2} label="sqlite.org/fts5.html" onClick={() => notify("Link copied to clipboard preview")} />
-              <EntityPill icon={TerminalSquare} label="npm run db:migrate" onClick={() => notify("Command copied to clipboard preview")} />
+              {selectedEntities.map((entity) => (
+                <EntityPill
+                  key={entity.id}
+                  icon={entity.type === "link" ? Link2 : entity.type === "command" ? TerminalSquare : Files}
+                  label={entity.label}
+                  onClick={() => notify(`${entity.type} selected: ${entity.label}`)}
+                />
+              ))}
             </InspectorSection>
 
             <InspectorSection title="Code Explorer" icon={Code2}>
@@ -689,6 +719,8 @@ export function ArchiveWorkspace() {
 }
 
 function ReaderView({ selectedConversation, activeView }: { selectedConversation: DemoConversation; activeView: ViewName }) {
+  const conversationMessages = selectedConversation.messages?.length ? selectedConversation.messages : messages;
+
   return (
     <div className="mx-auto max-w-3xl px-8 py-8">
       <div className="mb-8 border-b pb-6">
@@ -705,7 +737,7 @@ function ReaderView({ selectedConversation, activeView }: { selectedConversation
       </div>
 
       <div className="space-y-6">
-        {messages.map((message, index) => (
+        {conversationMessages.map((message, index) => (
           <motion.section
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -803,6 +835,25 @@ function CodeExplorerView({
   );
 }
 
+function buildTimelineGroups(conversations: DemoConversation[]) {
+  const formatter = new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" });
+  const groups = new Map<string, { year: string; month: string; days: string[] }>();
+
+  for (const conversation of conversations) {
+    const date = new Date(`${conversation.date}T00:00:00.000Z`);
+    const year = String(date.getUTCFullYear());
+    const month = formatter.format(date);
+    const key = `${year}-${month}`;
+    const group = groups.get(key) ?? { year, month, days: [] };
+    if (!group.days.includes(conversation.date)) group.days.push(conversation.date);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({ ...group, days: group.days.sort((a, b) => b.localeCompare(a)) }))
+    .sort((a, b) => (b.days[0] ?? "").localeCompare(a.days[0] ?? ""));
+}
+
 function parseImportPayload(text: string, fileName: string) {
   if (fileName.toLowerCase().endsWith(".jsonl") || fileName.toLowerCase().endsWith(".ndjson")) {
     return text
@@ -817,29 +868,129 @@ function parseImportPayload(text: string, fileName: string) {
 
 function summarizeImportedJson(payload: unknown, fileName: string, rawText: string): DemoConversation {
   const record = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
-  const messagesValue = Array.isArray(record.messages)
-    ? record.messages
-    : Array.isArray(record.conversation)
-      ? record.conversation
-      : Array.isArray(payload)
-        ? payload
-        : [];
-  const code = Math.floor((rawText.match(/```/g)?.length ?? 0) / 2);
+  const reconstructedMessages = extractConversationMessages(payload);
+  const snippets = extractCodeSnippetsFromText(rawText, "preview", fileName);
+  const firstTimestamp = findFirstTimestamp(payload);
 
   return {
     id: crypto.randomUUID(),
     title: typeof record.title === "string" ? record.title : fileName.replace(/\.(jsonl|ndjson|json)$/i, ""),
-    date: new Date().toISOString().slice(0, 10),
+    date: firstTimestamp ?? new Date().toISOString().slice(0, 10),
     source: detectSourceLabel(payload),
-    count: messagesValue.length || 1,
-    code,
+    count: reconstructedMessages.length || 1,
+    code: snippets.length,
     tools: rawText.toLowerCase().includes("tool") ? 1 : 0,
     favorite: false,
     pinned: false,
     imported: true,
+    messages: reconstructedMessages,
     rawPreview: rawText.slice(0, 3000),
     excerpt: `Imported preview from ${fileName}. Raw content stays in your browser session until the desktop storage layer persists it.`
   };
+}
+
+function extractConversationMessages(payload: unknown): ConversationMessage[] {
+  const sourceMessages = getMessageArray(payload);
+
+  return sourceMessages
+    .map((item, index) => {
+      const record = asRecord(item);
+      const role = String(record?.role ?? record?.speaker ?? record?.author_role ?? record?.type ?? `message ${index + 1}`);
+      const body = normalizeMessageText(record?.content ?? record?.text ?? record?.body ?? record?.message ?? item);
+      const timestamp = findFirstTimestamp(item);
+
+      return {
+        role,
+        time: timestamp ? timestamp.slice(11, 16) : String(index + 1).padStart(2, "0"),
+        body
+      };
+    })
+    .filter((message) => message.body.trim().length > 0)
+    .slice(0, 200);
+}
+
+function getMessageArray(payload: unknown): unknown[] {
+  const record = asRecord(payload);
+  if (Array.isArray(record?.messages)) return record.messages;
+  if (Array.isArray(record?.conversation)) return record.conversation;
+  if (Array.isArray(record?.items)) return record.items;
+  if (Array.isArray(payload)) return payload;
+
+  const mapping = asRecord(record?.mapping);
+  if (mapping) {
+    return Object.values(mapping)
+      .map((value) => asRecord(value)?.message ?? value)
+      .filter(Boolean);
+  }
+
+  return [payload];
+}
+
+function normalizeMessageText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(normalizeMessageText).filter(Boolean).join("\n\n");
+
+  const record = asRecord(value);
+  if (!record) return JSON.stringify(value, null, 2);
+  if (typeof record.text === "string") return record.text.trim();
+  if (typeof record.content === "string") return record.content.trim();
+  if (Array.isArray(record.parts)) return record.parts.map(normalizeMessageText).join("\n\n");
+  if (Array.isArray(record.content)) return record.content.map(normalizeMessageText).join("\n\n");
+
+  return JSON.stringify(record, null, 2);
+}
+
+function extractCodeSnippetsFromText(text: string, conversationId: string, source: string): CodeSnippet[] {
+  const snippets: CodeSnippet[] = [];
+  const pattern = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+  for (const match of text.matchAll(pattern)) {
+    snippets.push({
+      id: `${conversationId}-code-${snippets.length}`,
+      conversationId,
+      title: `${source} snippet ${snippets.length + 1}`,
+      language: match[1] || "text",
+      code: match[2].trim(),
+      source
+    });
+  }
+  return snippets;
+}
+
+function extractEntities(conversation: DemoConversation): ExtractedEntity[] {
+  const text = `${conversation.excerpt}\n${conversation.rawPreview ?? ""}`;
+  const entities: ExtractedEntity[] = [];
+
+  for (const match of text.matchAll(/\bhttps?:\/\/[^\s<>)"']+/gi)) {
+    entities.push({ id: `link-${entities.length}`, type: "link", label: match[0] });
+  }
+
+  for (const match of text.matchAll(/(?:[A-Za-z]:\\[^\s'"`]+|\/[^\s'"`]+|[\w.-]+\/[\w./-]+\.[A-Za-z0-9]{1,8})/g)) {
+    entities.push({ id: `file-${entities.length}`, type: "file", label: match[0] });
+  }
+
+  for (const match of text.matchAll(/\b(?:npm|pnpm|yarn|git|python|node|cargo)\s+[^\n`]+/gi)) {
+    entities.push({ id: `command-${entities.length}`, type: "command", label: match[0].trim().slice(0, 90) });
+  }
+
+  if (entities.length === 0) {
+    return [
+      { id: "summary-source", type: "file", label: conversation.imported ? "Imported archive preview" : "Synthetic architecture sample" }
+    ];
+  }
+
+  return entities.slice(0, 8);
+}
+
+function findFirstTimestamp(value: unknown): string | undefined {
+  const text = JSON.stringify(value);
+  const iso = text.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?/);
+  if (iso) return iso[0].slice(0, 10);
+  const dateOnly = text.match(/\d{4}-\d{2}-\d{2}/);
+  return dateOnly?.[0];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 function detectSourceLabel(payload: unknown) {
