@@ -51,6 +51,7 @@ interface ConversationMessage {
 
 interface DemoConversation {
   id: string;
+  sourceKey: string;
   title: string;
   date: string;
   source: string;
@@ -62,6 +63,7 @@ interface DemoConversation {
   excerpt: string;
   imported?: boolean;
   rawPreview?: string;
+  rawText?: string;
   messages?: ConversationMessage[];
 }
 
@@ -80,124 +82,24 @@ interface ExtractedEntity {
   label: string;
 }
 
-const seedConversations: DemoConversation[] = [
-  {
-    id: "1",
-    title: "Streaming parser for Claude Code exports",
-    date: "2026-05-12",
-    source: "Claude Code",
-    count: 42,
-    code: 8,
-    tools: 5,
-    favorite: true,
-    pinned: false,
-    excerpt: "Design an ingestion pipeline that handles very large JSON files without loading every branch into memory.",
-    rawPreview: "Parser registry, streaming adapters, FTS indexing, markdown export"
-  },
-  {
-    id: "2",
-    title: "ChatGPT research archive cleanup",
-    date: "2026-05-11",
-    source: "ChatGPT",
-    count: 19,
-    code: 2,
-    tools: 0,
-    favorite: false,
-    pinned: false,
-    excerpt: "Convert exported conversations into a chronological markdown book with frontmatter and separators.",
-    rawPreview: "Monthly archive book export with YAML frontmatter"
-  },
-  {
-    id: "3",
-    title: "SQLite FTS5 ranking notes",
-    date: "2026-05-10",
-    source: "Generic",
-    count: 31,
-    code: 3,
-    tools: 1,
-    favorite: false,
-    pinned: true,
-    excerpt: "Compare exact text search, filters, snippets, and future semantic search provider interfaces.",
-    rawPreview: "FTS5 snippets, ranking, filter clauses"
-  }
-];
-
-const seedSnippets: CodeSnippet[] = [
-  {
-    id: "parser-contract",
-    conversationId: "1",
-    title: "ArchiveParser contract",
-    language: "ts",
-    source: "Streaming parser for Claude Code exports",
-    code:
-      "export interface ArchiveParser {\n" +
-      "  readonly type: AssistantSource;\n" +
-      "  readonly version: string;\n" +
-      "  probe(payload: unknown): ParserProbeResult;\n" +
-      "  parse(payload: unknown, context: ParserContext): NormalizedConversationBundle;\n" +
-      "}"
-  },
-  {
-    id: "markdown-export",
-    conversationId: "2",
-    title: "Markdown archive export",
-    language: "md",
-    source: "ChatGPT research archive cleanup",
-    code:
-      "---\n" +
-      "title: \"Conversation title\"\n" +
-      "conversation_at: 2026-05-12\n" +
-      "---\n\n" +
-      "# Conversation title\n\n" +
-      "## user\n\n" +
-      "Message body"
-  },
-  {
-    id: "fts-query",
-    conversationId: "3",
-    title: "SQLite FTS query",
-    language: "sql",
-    source: "SQLite FTS5 ranking notes",
-    code:
-      "SELECT c.id, c.title,\n" +
-      "       snippet(message_fts, 3, '<mark>', '</mark>', '...', 16)\n" +
-      "FROM message_fts\n" +
-      "JOIN conversations c ON c.id = message_fts.conversation_id\n" +
-      "WHERE message_fts MATCH ?\n" +
-      "ORDER BY bm25(message_fts);"
-  }
-];
-
-const messages = [
-  {
-    role: "user",
-    time: "10:14",
-    body: "Build the import pipeline so raw JSON is never modified and duplicate imports are detected by hash."
-  },
-  {
-    role: "assistant",
-    time: "10:17",
-    body:
-      "The import service should hash the source file first, detect the parser, normalize the conversation, then persist everything in a single transaction. Parser warnings are stored alongside the import result instead of breaking the whole archive."
-  },
-  {
-    role: "assistant",
-    time: "10:21",
-    body:
-      "```ts\n" +
-      "export interface ArchiveParser {\n" +
-      "  readonly type: AssistantSource;\n" +
-      "  readonly version: string;\n" +
-      "  probe(payload: unknown): ParserProbeResult;\n" +
-      "  parse(payload: unknown, context: ParserContext): NormalizedConversationBundle;\n" +
-      "}\n" +
-      "```"
-  }
-];
+const emptyConversation: DemoConversation = {
+  id: "empty",
+  sourceKey: "empty",
+  title: "No archive imported",
+  date: new Date().toISOString().slice(0, 10),
+  source: "Local",
+  count: 0,
+  code: 0,
+  tools: 0,
+  favorite: false,
+  pinned: false,
+  excerpt: "Import a JSON, JSONL, or NDJSON export to browse your conversations.",
+  messages: []
+};
 
 export function ArchiveWorkspace() {
-  const [conversations, setConversations] = useState(seedConversations);
-  const [selectedConversationId, setSelectedConversationId] = useState(seedConversations[0].id);
+  const [conversations, setConversations] = useState<DemoConversation[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewName>("Recent");
   const [modal, setModal] = useState<ModalName>(null);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -212,19 +114,14 @@ export function ArchiveWorkspace() {
     "2026-May": true,
     "2026-April": true
   });
-  const [selectedSnippetId, setSelectedSnippetId] = useState(seedSnippets[0].id);
+  const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? conversations[0];
+  const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? conversations[0] ?? emptyConversation;
+  const hasImportedConversations = conversations.length > 0;
 
   const codeSnippets = useMemo(() => {
-    const importedSnippets = conversations
-      .filter((conversation) => conversation.imported && conversation.code > 0)
-      .flatMap((conversation) =>
-        extractCodeSnippetsFromText(conversation.rawPreview ?? "", conversation.id, conversation.title)
-      );
-
-    return [...seedSnippets, ...importedSnippets];
+    return conversations.flatMap(extractCodeSnippetsFromConversation);
   }, [conversations]);
 
   const selectedSnippet = codeSnippets.find((snippet) => snippet.id === selectedSnippetId) ?? codeSnippets[0];
@@ -273,12 +170,18 @@ export function ArchiveWorkspace() {
   async function importBrowserFiles(files: FileList | null) {
     if (!files?.length) return;
     const imported: DemoConversation[] = [];
+    let skippedDuplicates = 0;
 
     for (const file of Array.from(files)) {
       try {
         const text = await file.text();
+        const sourceKey = `${file.name}:${file.size}:${text.length}:${simpleHash(text)}`;
+        if (conversations.some((conversation) => conversation.sourceKey === sourceKey) || imported.some((conversation) => conversation.sourceKey === sourceKey)) {
+          skippedDuplicates += 1;
+          continue;
+        }
         const payload = parseImportPayload(text, file.name);
-        imported.push(summarizeImportedJson(payload, file.name, text));
+        imported.push(summarizeImportedJson(payload, file.name, text, sourceKey));
       } catch {
         notify(`Could not parse ${file.name}`);
       }
@@ -287,10 +190,16 @@ export function ArchiveWorkspace() {
     if (imported.length > 0) {
       setConversations((current) => [...imported, ...current]);
       setSelectedConversationId(imported[0].id);
+      const firstSnippet = extractCodeSnippetsFromConversation(imported[0])[0];
+      setSelectedSnippetId(firstSnippet?.id ?? null);
       setActiveView("Recent");
       setModal(null);
-      notify(`Imported ${imported.length} JSON/JSONL file${imported.length === 1 ? "" : "s"}`);
+      notify(`Imported ${imported.length} file${imported.length === 1 ? "" : "s"}${skippedDuplicates ? `, skipped ${skippedDuplicates} duplicate${skippedDuplicates === 1 ? "" : "s"}` : ""}`);
+    } else if (skippedDuplicates > 0) {
+      notify(`Skipped ${skippedDuplicates} duplicate file${skippedDuplicates === 1 ? "" : "s"}`);
     }
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function runCommand(command: string) {
@@ -306,24 +215,34 @@ export function ArchiveWorkspace() {
   }
 
   function exportMonthlyMarkdown() {
-    downloadTextFile("2026-May-All-Chats.md", buildMonthlyMarkdown(conversations), "text/markdown;charset=utf-8");
+    if (conversations.length === 0) {
+      notify("Import conversations before exporting markdown");
+      return;
+    }
+    downloadTextFile("archive-export.md", buildMonthlyMarkdown(conversations), "text/markdown;charset=utf-8");
     setModal(null);
-    notify("Downloaded 2026-May-All-Chats.md");
+    notify("Downloaded archive-export.md");
   }
 
   function removeSelectedConversation() {
-    if (conversations.length <= 1) {
-      notify("Keep at least one conversation in the archive preview");
+    if (!hasImportedConversations) {
+      notify("No imported conversation to remove");
       return;
     }
 
     const nextConversations = conversations.filter((conversation) => conversation.id !== selectedConversation.id);
     setConversations(nextConversations);
-    setSelectedConversationId(nextConversations[0].id);
+    setSelectedConversationId(nextConversations[0]?.id ?? null);
+    const nextSnippets = nextConversations.flatMap(extractCodeSnippetsFromConversation);
+    setSelectedSnippetId(nextSnippets[0]?.id ?? null);
     notify(`Removed ${selectedConversation.title} from the app preview`);
   }
 
   async function copySelectedSnippet() {
+    if (!selectedSnippet) {
+      notify("No code snippet selected");
+      return;
+    }
     await navigator.clipboard?.writeText(selectedSnippet.code);
     notify("Snippet copied");
   }
@@ -456,7 +375,7 @@ export function ArchiveWorkspace() {
               </p>
             </div>
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" title="Remove from app" onClick={removeSelectedConversation}>
+              <Button variant="ghost" size="icon" title="Remove from app" onClick={removeSelectedConversation} disabled={!hasImportedConversations}>
                 <Trash2 className="h-4 w-4" />
               </Button>
               <Button
@@ -497,9 +416,17 @@ export function ArchiveWorkspace() {
               {activeView === "Backups" ? (
                 <EmptyPanel
                   title="Backup center"
-                  body="Use the button below to stage a database or metadata backup export."
+                  body="Desktop storage backup is not connected in the browser preview yet."
                   action={() => setModal("backup")}
-                  actionLabel="Create backup"
+                  actionLabel="View backup status"
+                />
+              ) : null}
+              {filteredConversations.length === 0 ? (
+                <EmptyPanel
+                  title="No conversations loaded"
+                  body="Import a JSON, JSONL, or NDJSON archive to populate the conversation list."
+                  action={() => setModal("import")}
+                  actionLabel="Import archive"
                 />
               ) : null}
               <div className="space-y-2">
@@ -542,6 +469,10 @@ export function ArchiveWorkspace() {
                   }}
                   onCopy={copySelectedSnippet}
                   onDownload={() => {
+                    if (!selectedSnippet) {
+                      notify("No code snippet selected");
+                      return;
+                    }
                     const fileName = `${selectedSnippet.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.${selectedSnippet.language}`;
                     downloadTextFile(fileName, selectedSnippet.code, "text/plain;charset=utf-8");
                     notify("Snippet downloaded");
@@ -572,7 +503,7 @@ export function ArchiveWorkspace() {
                 <Code2 className="h-4 w-4" />
                 Inspect code
               </Button>
-              <Button variant="outline" className="w-full justify-start" onClick={removeSelectedConversation}>
+              <Button variant="outline" className="w-full justify-start" onClick={removeSelectedConversation} disabled={!hasImportedConversations}>
                 <Trash2 className="h-4 w-4" />
                 Remove from app
               </Button>
@@ -608,8 +539,8 @@ export function ArchiveWorkspace() {
                 className="w-full rounded-md border bg-background p-3 text-left font-mono text-xs leading-5 text-muted-foreground hover:border-primary/60"
                 onClick={() => setView("Code Explorer")}
               >
-                {selectedSnippet.language} - {selectedSnippet.title}
-                <div className="mt-2 text-foreground">{selectedSnippet.code.split("\n")[0]}</div>
+                {selectedSnippet ? `${selectedSnippet.language} - ${selectedSnippet.title}` : "No extracted code yet"}
+                <div className="mt-2 text-foreground">{selectedSnippet?.code.split("\n")[0] ?? "Import a file containing fenced code blocks."}</div>
               </button>
               <Button variant="secondary" className="mt-3 w-full" onClick={() => setView("Code Explorer")}>
                 <Code2 className="h-4 w-4" />
@@ -652,17 +583,17 @@ export function ArchiveWorkspace() {
             {modal === "watch" ? (
               <div className="space-y-4">
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Watch folders need native filesystem access. Enter a path now to save the intended watch target for the desktop shell.
+                  Watch folders need the Tauri desktop filesystem bridge. This browser preview will not fake a watch-folder import.
                 </p>
                 <Input value={watchPath} onChange={(event) => setWatchPath(event.target.value)} placeholder="E:\\Archives\\Claude" />
                 <Button
                   onClick={() => {
                     setModal(null);
-                    notify(watchPath ? `Watch folder staged: ${watchPath}` : "Watch folder needs a local path");
+                    notify(watchPath ? `Desktop watch path noted: ${watchPath}` : "Watch folder requires the desktop shell");
                   }}
                 >
                   <FolderSearch className="h-4 w-4" />
-                  Stage watch folder
+                  Close
                 </Button>
               </div>
             ) : null}
@@ -687,16 +618,16 @@ export function ArchiveWorkspace() {
             {modal === "backup" ? (
               <div className="space-y-4">
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Backup services are scaffolded for SQLite, settings, and metadata exports. This preview confirms the action and keeps private data local.
+                  Database backups require the local desktop storage layer. This browser preview will not create a fake queued backup.
                 </p>
                 <Button
                   onClick={() => {
                     setModal(null);
-                    notify("Backup export queued for the desktop storage layer");
+                    notify("Backup requires the desktop storage layer");
                   }}
                 >
                   <DatabaseBackup className="h-4 w-4" />
-                  Queue backup
+                  Close
                 </Button>
               </div>
             ) : null}
@@ -719,7 +650,7 @@ export function ArchiveWorkspace() {
 }
 
 function ReaderView({ selectedConversation, activeView }: { selectedConversation: DemoConversation; activeView: ViewName }) {
-  const conversationMessages = selectedConversation.messages?.length ? selectedConversation.messages : messages;
+  const conversationMessages = selectedConversation.messages ?? [];
 
   return (
     <div className="mx-auto max-w-3xl px-8 py-8">
@@ -737,6 +668,11 @@ function ReaderView({ selectedConversation, activeView }: { selectedConversation
       </div>
 
       <div className="space-y-6">
+        {conversationMessages.length === 0 ? (
+          <div className="rounded-md border bg-panel p-6 text-sm leading-6 text-muted-foreground">
+            No conversation messages are loaded. Import a JSON, JSONL, or NDJSON archive to populate the reader.
+          </div>
+        ) : null}
         {conversationMessages.map((message, index) => (
           <motion.section
             initial={{ opacity: 0, y: 8 }}
@@ -775,11 +711,25 @@ function CodeExplorerView({
   onDownload
 }: {
   snippets: CodeSnippet[];
-  selectedSnippet: CodeSnippet;
+  selectedSnippet?: CodeSnippet;
   onSelect: (snippet: CodeSnippet) => void;
   onCopy: () => void;
   onDownload: () => void;
 }) {
+  if (!selectedSnippet) {
+    return (
+      <div className="flex min-h-full items-center justify-center p-8">
+        <div className="max-w-md rounded-md border bg-panel p-6 text-center">
+          <Code2 className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">No code blocks extracted</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Import a JSON, JSONL, or NDJSON conversation that contains fenced code blocks and they will appear here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="grid min-h-full grid-cols-[280px_minmax(0,1fr)]">
       <div className="border-r bg-background/30 p-4">
@@ -866,15 +816,18 @@ function parseImportPayload(text: string, fileName: string) {
   return JSON.parse(text) as unknown;
 }
 
-function summarizeImportedJson(payload: unknown, fileName: string, rawText: string): DemoConversation {
+function summarizeImportedJson(payload: unknown, fileName: string, rawText: string, sourceKey: string): DemoConversation {
   const record = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
   const reconstructedMessages = extractConversationMessages(payload);
-  const snippets = extractCodeSnippetsFromText(rawText, "preview", fileName);
   const firstTimestamp = findFirstTimestamp(payload);
+  const id = crypto.randomUUID();
+  const title = typeof record.title === "string" ? record.title : fileName.replace(/\.(jsonl|ndjson|json)$/i, "");
+  const snippets = extractCodeSnippetsFromMessages(reconstructedMessages, id, title);
 
   return {
-    id: crypto.randomUUID(),
-    title: typeof record.title === "string" ? record.title : fileName.replace(/\.(jsonl|ndjson|json)$/i, ""),
+    id,
+    sourceKey,
+    title,
     date: firstTimestamp ?? new Date().toISOString().slice(0, 10),
     source: detectSourceLabel(payload),
     count: reconstructedMessages.length || 1,
@@ -885,6 +838,7 @@ function summarizeImportedJson(payload: unknown, fileName: string, rawText: stri
     imported: true,
     messages: reconstructedMessages,
     rawPreview: rawText.slice(0, 3000),
+    rawText,
     excerpt: `Imported preview from ${fileName}. Raw content stays in your browser session until the desktop storage layer persists it.`
   };
 }
@@ -895,7 +849,9 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
   return sourceMessages
     .map((item, index) => {
       const record = asRecord(item);
-      const role = String(record?.role ?? record?.speaker ?? record?.author_role ?? record?.type ?? `message ${index + 1}`);
+      const nestedMessage = asRecord(record?.message);
+      const author = asRecord(record?.author) ?? asRecord(nestedMessage?.author);
+      const role = String(record?.role ?? nestedMessage?.role ?? author?.role ?? record?.speaker ?? record?.author_role ?? record?.type ?? `message ${index + 1}`);
       const body = normalizeMessageText(record?.content ?? record?.text ?? record?.body ?? record?.message ?? item);
       const timestamp = findFirstTimestamp(item);
 
@@ -956,6 +912,23 @@ function extractCodeSnippetsFromText(text: string, conversationId: string, sourc
   return snippets;
 }
 
+function extractCodeSnippetsFromConversation(conversation: DemoConversation): CodeSnippet[] {
+  const fromMessages = extractCodeSnippetsFromMessages(conversation.messages ?? [], conversation.id, conversation.title);
+  if (fromMessages.length > 0) return fromMessages;
+  return extractCodeSnippetsFromText(conversation.rawText ?? conversation.rawPreview ?? "", conversation.id, conversation.title);
+}
+
+function extractCodeSnippetsFromMessages(messagesToSearch: ConversationMessage[], conversationId: string, source: string): CodeSnippet[] {
+  return messagesToSearch.flatMap((message, messageIndex) =>
+    extractCodeSnippetsFromText(message.body, `${conversationId}-${messageIndex}`, source).map((snippet, snippetIndex) => ({
+      ...snippet,
+      id: `${conversationId}-message-${messageIndex}-code-${snippetIndex}`,
+      conversationId,
+      title: `${source} snippet ${messageIndex + 1}.${snippetIndex + 1}`
+    }))
+  );
+}
+
 function extractEntities(conversation: DemoConversation): ExtractedEntity[] {
   const text = `${conversation.excerpt}\n${conversation.rawPreview ?? ""}`;
   const entities: ExtractedEntity[] = [];
@@ -974,7 +947,7 @@ function extractEntities(conversation: DemoConversation): ExtractedEntity[] {
 
   if (entities.length === 0) {
     return [
-      { id: "summary-source", type: "file", label: conversation.imported ? "Imported archive preview" : "Synthetic architecture sample" }
+      { id: "summary-source", type: "file", label: conversation.imported ? "Imported archive preview" : "No extracted entities yet" }
     ];
   }
 
@@ -993,6 +966,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+function simpleHash(text: string) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) | 0;
+  }
+  return String(hash);
+}
+
 function detectSourceLabel(payload: unknown) {
   const text = JSON.stringify(payload).slice(0, 3000).toLowerCase();
   if (text.includes("claude") || text.includes("sessionid")) return "Claude Code";
@@ -1005,12 +986,12 @@ function buildMonthlyMarkdown(conversations: DemoConversation[]) {
   const sorted = [...conversations].sort((a, b) => a.date.localeCompare(b.date));
   return [
     "---",
-    'title: "2026 May All Chats"',
+    'title: "Archive Export"',
     `generated_at: ${new Date().toISOString()}`,
     `conversation_count: ${sorted.length}`,
     "---",
     "",
-    "# 2026 May All Chats",
+    "# Archive Export",
     "",
     ...sorted.map((conversation) =>
       [
