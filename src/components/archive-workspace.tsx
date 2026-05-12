@@ -6,10 +6,12 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronDown,
+  Clipboard,
   Code2,
   Command,
   DatabaseBackup,
   Download,
+  Eye,
   FileJson,
   Files,
   FolderSearch,
@@ -52,6 +54,16 @@ interface DemoConversation {
   pinned: boolean;
   excerpt: string;
   imported?: boolean;
+  rawPreview?: string;
+}
+
+interface CodeSnippet {
+  id: string;
+  conversationId: string;
+  title: string;
+  language: string;
+  code: string;
+  source: string;
 }
 
 const seedConversations: DemoConversation[] = [
@@ -65,7 +77,8 @@ const seedConversations: DemoConversation[] = [
     tools: 5,
     favorite: true,
     pinned: false,
-    excerpt: "Design an ingestion pipeline that handles very large JSON files without loading every branch into memory."
+    excerpt: "Design an ingestion pipeline that handles very large JSON files without loading every branch into memory.",
+    rawPreview: "Parser registry, streaming adapters, FTS indexing, markdown export"
   },
   {
     id: "2",
@@ -77,7 +90,8 @@ const seedConversations: DemoConversation[] = [
     tools: 0,
     favorite: false,
     pinned: false,
-    excerpt: "Convert exported conversations into a chronological markdown book with frontmatter and separators."
+    excerpt: "Convert exported conversations into a chronological markdown book with frontmatter and separators.",
+    rawPreview: "Monthly archive book export with YAML frontmatter"
   },
   {
     id: "3",
@@ -89,7 +103,54 @@ const seedConversations: DemoConversation[] = [
     tools: 1,
     favorite: false,
     pinned: true,
-    excerpt: "Compare exact text search, filters, snippets, and future semantic search provider interfaces."
+    excerpt: "Compare exact text search, filters, snippets, and future semantic search provider interfaces.",
+    rawPreview: "FTS5 snippets, ranking, filter clauses"
+  }
+];
+
+const seedSnippets: CodeSnippet[] = [
+  {
+    id: "parser-contract",
+    conversationId: "1",
+    title: "ArchiveParser contract",
+    language: "ts",
+    source: "Streaming parser for Claude Code exports",
+    code:
+      "export interface ArchiveParser {\n" +
+      "  readonly type: AssistantSource;\n" +
+      "  readonly version: string;\n" +
+      "  probe(payload: unknown): ParserProbeResult;\n" +
+      "  parse(payload: unknown, context: ParserContext): NormalizedConversationBundle;\n" +
+      "}"
+  },
+  {
+    id: "markdown-export",
+    conversationId: "2",
+    title: "Markdown archive export",
+    language: "md",
+    source: "ChatGPT research archive cleanup",
+    code:
+      "---\n" +
+      "title: \"Conversation title\"\n" +
+      "conversation_at: 2026-05-12\n" +
+      "---\n\n" +
+      "# Conversation title\n\n" +
+      "## user\n\n" +
+      "Message body"
+  },
+  {
+    id: "fts-query",
+    conversationId: "3",
+    title: "SQLite FTS query",
+    language: "sql",
+    source: "SQLite FTS5 ranking notes",
+    code:
+      "SELECT c.id, c.title,\n" +
+      "       snippet(message_fts, 3, '<mark>', '</mark>', '...', 16)\n" +
+      "FROM message_fts\n" +
+      "JOIN conversations c ON c.id = message_fts.conversation_id\n" +
+      "WHERE message_fts MATCH ?\n" +
+      "ORDER BY bm25(message_fts);"
   }
 ];
 
@@ -108,7 +169,15 @@ const messages = [
   {
     role: "assistant",
     time: "10:21",
-    body: "```ts\nexport interface ArchiveParser {\n  readonly type: AssistantSource;\n  readonly version: string;\n  probe(payload: unknown): ParserProbeResult;\n  parse(payload: unknown, context: ParserContext): NormalizedConversationBundle;\n}\n```"
+    body:
+      "```ts\n" +
+      "export interface ArchiveParser {\n" +
+      "  readonly type: AssistantSource;\n" +
+      "  readonly version: string;\n" +
+      "  probe(payload: unknown): ParserProbeResult;\n" +
+      "  parse(payload: unknown, context: ParserContext): NormalizedConversationBundle;\n" +
+      "}\n" +
+      "```"
   }
 ];
 
@@ -130,9 +199,31 @@ export function ArchiveWorkspace() {
   const [datePreference, setDatePreference] = useState("Prefer conversation timestamps");
   const [watchPath, setWatchPath] = useState("");
   const [activeDay, setActiveDay] = useState<string | null>(null);
+  const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({
+    "2026-May": true,
+    "2026-April": true
+  });
+  const [selectedSnippetId, setSelectedSnippetId] = useState(seedSnippets[0].id);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? conversations[0];
+
+  const codeSnippets = useMemo(() => {
+    const importedSnippets = conversations
+      .filter((conversation) => conversation.imported && conversation.code > 0)
+      .map<CodeSnippet>((conversation) => ({
+        id: `imported-${conversation.id}`,
+        conversationId: conversation.id,
+        title: `${conversation.title} code preview`,
+        language: "text",
+        source: conversation.title,
+        code: conversation.rawPreview ?? "Imported JSON preview"
+      }));
+
+    return [...seedSnippets, ...importedSnippets];
+  }, [conversations]);
+
+  const selectedSnippet = codeSnippets.find((snippet) => snippet.id === selectedSnippetId) ?? codeSnippets[0];
 
   const filteredConversations = useMemo(() => {
     let results = conversations;
@@ -154,6 +245,9 @@ export function ArchiveWorkspace() {
   function setView(view: ViewName) {
     setActiveView(view);
     setActiveDay(null);
+    if (view === "Code Explorer" && selectedSnippet) {
+      setSelectedConversationId(selectedSnippet.conversationId);
+    }
     notify(`Opened ${view}`);
   }
 
@@ -177,9 +271,8 @@ export function ArchiveWorkspace() {
     for (const file of Array.from(files)) {
       try {
         const text = await file.text();
-        const payload = JSON.parse(text) as unknown;
-        const summary = summarizeImportedJson(payload, file.name);
-        imported.push(summary);
+        const payload = parseImportPayload(text, file.name);
+        imported.push(summarizeImportedJson(payload, file.name, text));
       } catch {
         notify(`Could not parse ${file.name}`);
       }
@@ -190,32 +283,46 @@ export function ArchiveWorkspace() {
       setSelectedConversationId(imported[0].id);
       setActiveView("Recent");
       setModal(null);
-      notify(`Imported ${imported.length} JSON file${imported.length === 1 ? "" : "s"} into the local preview`);
+      notify(`Imported ${imported.length} JSON/JSONL file${imported.length === 1 ? "" : "s"}`);
     }
   }
 
   function runCommand(command: string) {
     setCommandOpen(false);
     setCommandQuery("");
-    if (command === "Import JSON file") {
+    if (command === "Import JSON or JSONL file") {
       setModal("import");
       fileInputRef.current?.click();
     }
-    if (command === "Export monthly markdown book") setModal("export");
+    if (command === "Export monthly markdown book") exportMonthlyMarkdown();
     if (command === "Open Code Explorer") setView("Code Explorer");
     if (command === "Create database backup") setModal("backup");
   }
 
-  const commands = ["Import JSON file", "Export monthly markdown book", "Open Code Explorer", "Create database backup"].filter(
-    (command) => command.toLowerCase().includes(commandQuery.toLowerCase())
-  );
+  function exportMonthlyMarkdown() {
+    downloadTextFile("2026-May-All-Chats.md", buildMonthlyMarkdown(conversations), "text/markdown;charset=utf-8");
+    setModal(null);
+    notify("Downloaded 2026-May-All-Chats.md");
+  }
+
+  async function copySelectedSnippet() {
+    await navigator.clipboard?.writeText(selectedSnippet.code);
+    notify("Snippet copied");
+  }
+
+  const commands = [
+    "Import JSON or JSONL file",
+    "Export monthly markdown book",
+    "Open Code Explorer",
+    "Create database backup"
+  ].filter((command) => command.toLowerCase().includes(commandQuery.toLowerCase()));
 
   return (
     <main className="h-screen overflow-hidden p-3 text-foreground">
       <input
         ref={fileInputRef}
         type="file"
-        accept="application/json,.json"
+        accept="application/json,.json,.jsonl,.ndjson"
         multiple
         className="hidden"
         onChange={(event) => importBrowserFiles(event.target.files)}
@@ -264,32 +371,47 @@ export function ArchiveWorkspace() {
             </SidebarSection>
 
             <SidebarSection title="Timeline">
-              {timeline.map((year) => (
-                <div key={`${year.year}-${year.month}`} className="mb-3">
-                  <div className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                    <ChevronDown className="h-3 w-3" />
-                    {year.year} / {year.month}
+              {timeline.map((year) => {
+                const key = `${year.year}-${year.month}`;
+                return (
+                  <div key={key} className="mb-3">
+                    <button
+                      className="mb-1 flex w-full items-center gap-1 rounded-sm px-1 py-1 text-left text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                      onClick={() => setExpandedTimeline((current) => ({ ...current, [key]: !current[key] }))}
+                    >
+                      <ChevronDown className={cn("h-3 w-3 transition-transform", !expandedTimeline[key] && "-rotate-90")} />
+                      {year.year} / {year.month}
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {expandedTimeline[key] ? (
+                        <motion.div
+                          className="space-y-1 overflow-hidden pl-4"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                        >
+                          {year.days.map((day) => (
+                            <button
+                              className={cn(
+                                "block w-full rounded-sm px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground",
+                                activeDay === day && "bg-muted text-foreground"
+                              )}
+                              key={day}
+                              onClick={() => {
+                                setActiveView("Timeline");
+                                setActiveDay(day);
+                                notify(`Filtered timeline to ${day}`);
+                              }}
+                            >
+                              {day}
+                            </button>
+                          ))}
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
                   </div>
-                  <div className="space-y-1 pl-4">
-                    {year.days.map((day) => (
-                      <button
-                        className={cn(
-                          "block w-full rounded-sm px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground",
-                          activeDay === day && "bg-muted text-foreground"
-                        )}
-                        key={day}
-                        onClick={() => {
-                          setActiveView("Timeline");
-                          setActiveDay(day);
-                          notify(`Filtered timeline to ${day}`);
-                        }}
-                      >
-                        {day}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </SidebarSection>
           </nav>
 
@@ -310,7 +432,7 @@ export function ArchiveWorkspace() {
                 {selectedConversation.pinned ? <Badge className="border-primary/30 text-primary">Pinned</Badge> : null}
               </div>
               <p className="text-xs text-muted-foreground">
-                {selectedConversation.date} · {selectedConversation.count} messages · {selectedConversation.code} code blocks
+                {selectedConversation.date} - {selectedConversation.count} messages - {selectedConversation.code} code blocks
               </p>
             </div>
             <div className="flex items-center gap-1">
@@ -349,7 +471,14 @@ export function ArchiveWorkspace() {
                 <Badge>{filteredConversations.length}</Badge>
               </div>
               {activeView === "Tags" ? <EmptyPanel title="Tags are ready" body="Tag creation will attach labels to normalized conversations." /> : null}
-              {activeView === "Backups" ? <EmptyPanel title="Backup center" body="Use the button below to stage a database or metadata backup export." action={() => setModal("backup")} actionLabel="Create backup" /> : null}
+              {activeView === "Backups" ? (
+                <EmptyPanel
+                  title="Backup center"
+                  body="Use the button below to stage a database or metadata backup export."
+                  action={() => setModal("backup")}
+                  actionLabel="Create backup"
+                />
+              ) : null}
               <div className="space-y-2">
                 {filteredConversations.map((conversation) => (
                   <button
@@ -370,7 +499,7 @@ export function ArchiveWorkspace() {
                     <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{conversation.excerpt}</p>
                     <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                       <span>{conversation.date}</span>
-                      <span>·</span>
+                      <span>-</span>
                       <span>{conversation.count} msgs</span>
                     </div>
                   </button>
@@ -379,50 +508,25 @@ export function ArchiveWorkspace() {
             </div>
 
             <article className="scrollbar-thin overflow-y-auto bg-panel-strong">
-              <div className="mx-auto max-w-3xl px-8 py-8">
-                <div className="mb-8 border-b pb-6">
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <Badge className="border-primary/30 text-primary">
-                      <ShieldCheck className="mr-1 h-3 w-3" />
-                      Local only
-                    </Badge>
-                    <Badge>{activeView}</Badge>
-                    <Badge>FTS indexed</Badge>
-                  </div>
-                  <h2 className="text-3xl font-semibold leading-tight">{selectedConversation.title}</h2>
-                  <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">{selectedConversation.excerpt}</p>
-                </div>
-
-                <div className="space-y-6">
-                  {messages.map((message, index) => (
-                    <motion.section
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: index * 0.05 }}
-                      key={`${message.role}-${message.time}`}
-                      className="grid grid-cols-[88px_minmax(0,1fr)] gap-4"
-                    >
-                      <div className="sticky top-4 h-fit text-xs text-muted-foreground">{message.time}</div>
-                      <div>
-                        <div className="mb-2 flex items-center gap-2">
-                          <Badge className={message.role === "assistant" ? "border-primary/30 text-primary" : ""}>
-                            {message.role}
-                          </Badge>
-                        </div>
-                        <div className="reader-prose rounded-md border bg-panel p-4 text-sm leading-7">
-                          {message.body.startsWith("```") ? (
-                            <pre>
-                              <code>{message.body.replace(/```[a-z]*\n?|```/g, "")}</code>
-                            </pre>
-                          ) : (
-                            <p>{message.body}</p>
-                          )}
-                        </div>
-                      </div>
-                    </motion.section>
-                  ))}
-                </div>
-              </div>
+              {activeView === "Code Explorer" ? (
+                <CodeExplorerView
+                  snippets={codeSnippets}
+                  selectedSnippet={selectedSnippet}
+                  onSelect={(snippet) => {
+                    setSelectedSnippetId(snippet.id);
+                    setSelectedConversationId(snippet.conversationId);
+                    notify(`Opened snippet: ${snippet.title}`);
+                  }}
+                  onCopy={copySelectedSnippet}
+                  onDownload={() => {
+                    const fileName = `${selectedSnippet.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.${selectedSnippet.language}`;
+                    downloadTextFile(fileName, selectedSnippet.code, "text/plain;charset=utf-8");
+                    notify("Snippet downloaded");
+                  }}
+                />
+              ) : (
+                <ReaderView selectedConversation={selectedConversation} activeView={activeView} />
+              )}
             </article>
           </div>
         </section>
@@ -436,11 +540,23 @@ export function ArchiveWorkspace() {
           </div>
 
           <div className="scrollbar-thin flex-1 overflow-y-auto p-4">
+            <InspectorSection title="Quick Actions" icon={Eye}>
+              <Button variant="secondary" className="w-full justify-start" onClick={() => setModal("export")}>
+                <Download className="h-4 w-4" />
+                Export markdown
+              </Button>
+              <Button variant="secondary" className="w-full justify-start" onClick={() => setView("Code Explorer")}>
+                <Code2 className="h-4 w-4" />
+                Inspect code
+              </Button>
+            </InspectorSection>
+
             <InspectorSection title="Metadata" icon={FileJson}>
               <KeyValue label="Source" value={selectedConversation.source} />
               <KeyValue label="Date" value={selectedConversation.date} />
               <KeyValue label="Messages" value={String(selectedConversation.count)} />
               <KeyValue label="Tool calls" value={String(selectedConversation.tools)} />
+              <KeyValue label="Active view" value={activeView} />
             </InspectorSection>
 
             <InspectorSection title="Extracted Entities" icon={Sparkles}>
@@ -454,8 +570,8 @@ export function ArchiveWorkspace() {
                 className="w-full rounded-md border bg-background p-3 text-left font-mono text-xs leading-5 text-muted-foreground hover:border-primary/60"
                 onClick={() => setView("Code Explorer")}
               >
-                TypeScript · Parser contract
-                <div className="mt-2 text-foreground">ArchiveParser.parse()</div>
+                {selectedSnippet.language} - {selectedSnippet.title}
+                <div className="mt-2 text-foreground">{selectedSnippet.code.split("\n")[0]}</div>
               </button>
               <Button variant="secondary" className="mt-3 w-full" onClick={() => setView("Code Explorer")}>
                 <Code2 className="h-4 w-4" />
@@ -492,11 +608,11 @@ export function ArchiveWorkspace() {
             {modal === "import" ? (
               <div className="space-y-4">
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Pick one or more JSON files. In this browser preview they are parsed into local in-memory cards; the Tauri shell will use the full filesystem import service.
+                  Pick one or more JSON, JSONL, or NDJSON files. Browser preview imports stay in memory; the Tauri shell will persist through the local storage service.
                 </p>
                 <Button onClick={() => fileInputRef.current?.click()}>
                   <Upload className="h-4 w-4" />
-                  Choose JSON files
+                  Choose JSON or JSONL files
                 </Button>
               </div>
             ) : null}
@@ -519,11 +635,18 @@ export function ArchiveWorkspace() {
             ) : null}
             {modal === "settings" ? (
               <div className="space-y-4">
-                <SettingRow label="Date policy" value={datePreference} onClick={() => {
-                  const next = datePreference === "Prefer conversation timestamps" ? "Prefer filesystem modified date" : "Prefer conversation timestamps";
-                  setDatePreference(next);
-                  notify(next);
-                }} />
+                <SettingRow
+                  label="Date policy"
+                  value={datePreference}
+                  onClick={() => {
+                    const next =
+                      datePreference === "Prefer conversation timestamps"
+                        ? "Prefer filesystem modified date"
+                        : "Prefer conversation timestamps";
+                    setDatePreference(next);
+                    notify(next);
+                  }}
+                />
                 <SettingRow label="Theme" value={darkMode ? "Dark" : "Light"} onClick={toggleTheme} />
                 <SettingRow label="Telemetry" value="Disabled" onClick={() => notify("Telemetry is permanently disabled by default")} />
               </div>
@@ -533,10 +656,12 @@ export function ArchiveWorkspace() {
                 <p className="text-sm leading-6 text-muted-foreground">
                   Backup services are scaffolded for SQLite, settings, and metadata exports. This preview confirms the action and keeps private data local.
                 </p>
-                <Button onClick={() => {
-                  setModal(null);
-                  notify("Backup export queued for the desktop storage layer");
-                }}>
+                <Button
+                  onClick={() => {
+                    setModal(null);
+                    notify("Backup export queued for the desktop storage layer");
+                  }}
+                >
                   <DatabaseBackup className="h-4 w-4" />
                   Queue backup
                 </Button>
@@ -545,14 +670,11 @@ export function ArchiveWorkspace() {
             {modal === "export" ? (
               <div className="space-y-4">
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Markdown export will combine selected conversations into chronological archive books with metadata headers.
+                  Download a chronological markdown archive book with metadata headers for the current in-memory archive.
                 </p>
-                <Button onClick={() => {
-                  setModal(null);
-                  notify("Markdown archive export queued");
-                }}>
+                <Button onClick={exportMonthlyMarkdown}>
                   <Download className="h-4 w-4" />
-                  Queue markdown export
+                  Download markdown book
                 </Button>
               </div>
             ) : null}
@@ -563,7 +685,134 @@ export function ArchiveWorkspace() {
   );
 }
 
-function summarizeImportedJson(payload: unknown, fileName: string): DemoConversation {
+function ReaderView({ selectedConversation, activeView }: { selectedConversation: DemoConversation; activeView: ViewName }) {
+  return (
+    <div className="mx-auto max-w-3xl px-8 py-8">
+      <div className="mb-8 border-b pb-6">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Badge className="border-primary/30 text-primary">
+            <ShieldCheck className="mr-1 h-3 w-3" />
+            Local only
+          </Badge>
+          <Badge>{activeView}</Badge>
+          <Badge>FTS indexed</Badge>
+        </div>
+        <h2 className="text-3xl font-semibold leading-tight">{selectedConversation.title}</h2>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">{selectedConversation.excerpt}</p>
+      </div>
+
+      <div className="space-y-6">
+        {messages.map((message, index) => (
+          <motion.section
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.05 }}
+            key={`${message.role}-${message.time}`}
+            className="grid grid-cols-[88px_minmax(0,1fr)] gap-4"
+          >
+            <div className="sticky top-4 h-fit text-xs text-muted-foreground">{message.time}</div>
+            <div>
+              <div className="mb-2 flex items-center gap-2">
+                <Badge className={message.role === "assistant" ? "border-primary/30 text-primary" : ""}>{message.role}</Badge>
+              </div>
+              <div className="reader-prose rounded-md border bg-panel p-4 text-sm leading-7">
+                {message.body.startsWith("```") ? (
+                  <pre>
+                    <code>{message.body.replace(/```[a-z]*\n?|```/g, "")}</code>
+                  </pre>
+                ) : (
+                  <p>{message.body}</p>
+                )}
+              </div>
+            </div>
+          </motion.section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CodeExplorerView({
+  snippets,
+  selectedSnippet,
+  onSelect,
+  onCopy,
+  onDownload
+}: {
+  snippets: CodeSnippet[];
+  selectedSnippet: CodeSnippet;
+  onSelect: (snippet: CodeSnippet) => void;
+  onCopy: () => void;
+  onDownload: () => void;
+}) {
+  return (
+    <div className="grid min-h-full grid-cols-[280px_minmax(0,1fr)]">
+      <div className="border-r bg-background/30 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Code Explorer</h2>
+          <Badge>{snippets.length}</Badge>
+        </div>
+        <div className="space-y-2">
+          {snippets.map((snippet) => (
+            <button
+              key={snippet.id}
+              onClick={() => onSelect(snippet)}
+              className={cn(
+                "w-full rounded-md border bg-panel-strong p-3 text-left hover:border-primary/60",
+                selectedSnippet.id === snippet.id && "border-primary"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{snippet.title}</span>
+                <Badge>{snippet.language}</Badge>
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{snippet.source}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="p-6">
+        <div className="mb-4 flex items-start justify-between gap-4 border-b pb-4">
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <Badge className="border-primary/30 text-primary">{selectedSnippet.language}</Badge>
+              <Badge>Extracted snippet</Badge>
+            </div>
+            <h2 className="text-2xl font-semibold">{selectedSnippet.title}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{selectedSnippet.source}</p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onCopy}>
+              <Clipboard className="h-4 w-4" />
+              Copy
+            </Button>
+            <Button onClick={onDownload}>
+              <Download className="h-4 w-4" />
+              Download
+            </Button>
+          </div>
+        </div>
+        <pre className="max-h-[calc(100vh-230px)] overflow-auto rounded-md border bg-background p-4 font-mono text-sm leading-6">
+          <code>{selectedSnippet.code}</code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function parseImportPayload(text: string, fileName: string) {
+  if (fileName.toLowerCase().endsWith(".jsonl") || fileName.toLowerCase().endsWith(".ndjson")) {
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as unknown);
+  }
+
+  return JSON.parse(text) as unknown;
+}
+
+function summarizeImportedJson(payload: unknown, fileName: string, rawText: string): DemoConversation {
   const record = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
   const messagesValue = Array.isArray(record.messages)
     ? record.messages
@@ -572,20 +821,20 @@ function summarizeImportedJson(payload: unknown, fileName: string): DemoConversa
       : Array.isArray(payload)
         ? payload
         : [];
-  const content = JSON.stringify(payload);
-  const code = (content.match(/```/g)?.length ?? 0) / 2;
+  const code = Math.floor((rawText.match(/```/g)?.length ?? 0) / 2);
 
   return {
     id: crypto.randomUUID(),
-    title: typeof record.title === "string" ? record.title : fileName.replace(/\.json$/i, ""),
+    title: typeof record.title === "string" ? record.title : fileName.replace(/\.(jsonl|ndjson|json)$/i, ""),
     date: new Date().toISOString().slice(0, 10),
     source: detectSourceLabel(payload),
     count: messagesValue.length || 1,
-    code: Math.floor(code),
-    tools: content.includes("tool") ? 1 : 0,
+    code,
+    tools: rawText.toLowerCase().includes("tool") ? 1 : 0,
     favorite: false,
     pinned: false,
     imported: true,
+    rawPreview: rawText.slice(0, 3000),
     excerpt: `Imported preview from ${fileName}. Raw content stays in your browser session until the desktop storage layer persists it.`
   };
 }
@@ -598,9 +847,51 @@ function detectSourceLabel(payload: unknown) {
   return "Generic";
 }
 
+function buildMonthlyMarkdown(conversations: DemoConversation[]) {
+  const sorted = [...conversations].sort((a, b) => a.date.localeCompare(b.date));
+  return [
+    "---",
+    'title: "2026 May All Chats"',
+    `generated_at: ${new Date().toISOString()}`,
+    `conversation_count: ${sorted.length}`,
+    "---",
+    "",
+    "# 2026 May All Chats",
+    "",
+    ...sorted.map((conversation) =>
+      [
+        "---",
+        "",
+        `## ${conversation.title}`,
+        "",
+        `- Date: ${conversation.date}`,
+        `- Source: ${conversation.source}`,
+        `- Messages: ${conversation.count}`,
+        `- Code blocks: ${conversation.code}`,
+        "",
+        conversation.excerpt,
+        "",
+        conversation.rawPreview ? "```text\n" + conversation.rawPreview.slice(0, 1200) + "\n```" : ""
+      ].join("\n")
+    )
+  ].join("\n");
+}
+
+function downloadTextFile(fileName: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function modalTitle(modal: Exclude<ModalName, null>) {
   const titles = {
-    import: "Import JSON",
+    import: "Import JSON / JSONL",
     watch: "Watch Folder",
     settings: "Settings",
     backup: "Backup Export",
@@ -682,7 +973,10 @@ function EntityPill({
   onClick: () => void;
 }) {
   return (
-    <button onClick={onClick} className="flex min-w-0 items-center gap-2 rounded-md border bg-panel-strong px-3 py-2 text-left text-sm hover:border-primary/60">
+    <button
+      onClick={onClick}
+      className="flex min-w-0 items-center gap-2 rounded-md border bg-panel-strong px-3 py-2 text-left text-sm hover:border-primary/60"
+    >
       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="truncate">{label}</span>
     </button>
@@ -727,14 +1021,14 @@ function CommandPalette({
 }) {
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 pt-24"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-4 pt-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onClick={onClose}
     >
       <motion.div
-        className="w-[640px] rounded-lg border bg-panel-strong p-3 shadow-soft-panel"
+        className="max-h-[calc(100vh-48px)] w-full max-w-[560px] overflow-y-auto rounded-lg border bg-panel-strong p-3 shadow-soft-panel"
         initial={{ scale: 0.97, y: -12 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.97, y: -12 }}
@@ -742,7 +1036,13 @@ function CommandPalette({
       >
         <div className="relative mb-3">
           <Command className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus placeholder="Import, export, jump, search, backup" />
+          <Input
+            className="pl-9"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            autoFocus
+            placeholder="Import, export, jump, search, backup"
+          />
         </div>
         <div className="grid gap-1">
           {commands.map((command) => (
@@ -759,14 +1059,14 @@ function CommandPalette({
 function AppModal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 pt-10"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onClick={onClose}
     >
       <motion.div
-        className="w-full max-w-lg rounded-lg border bg-panel-strong p-4 shadow-soft-panel"
+        className="max-h-[calc(100vh-80px)] w-full max-w-lg overflow-y-auto rounded-lg border bg-panel-strong p-4 shadow-soft-panel"
         initial={{ scale: 0.97, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.97, y: 8 }}
@@ -786,7 +1086,10 @@ function AppModal({ title, children, onClose }: { title: string; children: React
 
 function SettingRow({ label, value, onClick }: { label: string; value: string; onClick: () => void }) {
   return (
-    <button onClick={onClick} className="flex w-full items-center justify-between rounded-md border bg-panel px-3 py-2 text-left text-sm hover:border-primary/60">
+    <button
+      onClick={onClick}
+      className="flex w-full items-center justify-between rounded-md border bg-panel px-3 py-2 text-left text-sm hover:border-primary/60"
+    >
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium">{value}</span>
     </button>
