@@ -359,6 +359,10 @@ export function ArchiveWorkspace() {
                 Watch
               </Button>
             </div>
+            <Button variant="outline" size="sm" className="mt-2 w-full justify-start" onClick={() => setCommandOpen(true)}>
+              <Command className="h-4 w-4" />
+              Command palette
+            </Button>
           </div>
 
           <nav className="scrollbar-thin flex-1 overflow-y-auto p-3">
@@ -416,10 +420,9 @@ export function ArchiveWorkspace() {
           </nav>
 
           <div className="border-t p-3">
-            <Button variant="outline" className="w-full justify-start" onClick={() => setCommandOpen(true)}>
-              <Command className="h-4 w-4" />
-              Command palette
-            </Button>
+            <p className="text-xs leading-5 text-muted-foreground">
+              Local-first. No telemetry. Raw archives stay outside Git.
+            </p>
           </div>
         </aside>
 
