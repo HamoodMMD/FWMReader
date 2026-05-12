@@ -1,0 +1,17 @@
+{
+  "title": "Synthetic parser fixture",
+  "createdAt": "2026-05-12T08:00:00.000Z",
+  "messages": [
+    {
+      "role": "user",
+      "timestamp": "2026-05-12T08:00:01.000Z",
+      "content": "Please show a TypeScript hello world."
+    },
+    {
+      "role": "assistant",
+      "timestamp": "2026-05-12T08:00:05.000Z",
+      "content": "```ts\nconsole.log(\"hello archive\");\n```\n\nSee https://sqlite.org/fts5.html"
+    }
+  ]
+}
+
