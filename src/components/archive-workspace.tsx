@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive,
   CalendarDays,
+  ChartNoAxesColumn,
   CheckCircle2,
   ChevronDown,
   Clipboard,
@@ -34,18 +35,19 @@ import {
   X
 } from "lucide-react";
 import type React from "react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-type ViewName = "Recent" | "Timeline" | "Tags" | "Code Explorer" | "Backups";
+type ViewName = "Recent" | "Timeline" | "Tags" | "Code Explorer" | "Activity" | "Backups";
 type ModalName = "import" | "watch" | "settings" | "backup" | "export" | null;
-type MessageKind = "text" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
+type MessageKind = "text" | "memory_context" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
 
 const messageKindOptions: Array<{ kind: MessageKind; label: string; description: string }> = [
   { kind: "text", label: "Text messages", description: "User, assistant, and system prose." },
+  { kind: "memory_context", label: "Memory context", description: "Synthetic context blocks inserted before the current user message." },
   { kind: "thinking", label: "Thinking blocks", description: "Claude thinking content and reasoning payloads." },
   { kind: "tool_use", label: "Tool calls", description: "Read, edit, search, shell, and other tool request blocks." },
   { kind: "tool_result", label: "Tool results", description: "Tool output returned into the conversation." },
@@ -93,6 +95,17 @@ interface ExtractedEntity {
   label: string;
 }
 
+interface ArchiveStateSnapshot {
+  conversations: DemoConversation[];
+  selectedConversationId: string | null;
+  hiddenTags: string[];
+  hiddenKinds: MessageKind[];
+  showMessageTimestamps: boolean;
+  showStatusToast: boolean;
+  darkMode: boolean;
+  datePreference: string;
+}
+
 const emptyConversation: DemoConversation = {
   id: "empty",
   sourceKey: "empty",
@@ -122,7 +135,10 @@ export function ArchiveWorkspace() {
   const [watchPath, setWatchPath] = useState("");
   const [activeDay, setActiveDay] = useState<string | null>(null);
   const [hiddenTags, setHiddenTags] = useState<string[]>([]);
-  const [hiddenKinds, setHiddenKinds] = useState<MessageKind[]>(["thinking", "signature"]);
+  const [hiddenKinds, setHiddenKinds] = useState<MessageKind[]>(["memory_context", "thinking", "signature"]);
+  const [showMessageTimestamps, setShowMessageTimestamps] = useState(true);
+  const [showStatusToast, setShowStatusToast] = useState(false);
+  const [archiveLoaded, setArchiveLoaded] = useState(false);
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({
     "2026-May": true,
     "2026-April": true
@@ -147,6 +163,7 @@ export function ArchiveWorkspace() {
   const selectedEntities = useMemo(() => extractEntities(visibleSelectedConversation), [visibleSelectedConversation]);
   const timelineGroups = useMemo(() => buildTimelineGroups(visibleConversations), [visibleConversations]);
   const allTags = useMemo(() => Array.from(new Set(conversations.flatMap(getConversationTags))).sort(), [conversations]);
+  const archiveAnalytics = useMemo(() => buildArchiveAnalytics(visibleConversations), [visibleConversations]);
 
   const filteredConversations = useMemo(() => {
     let results = visibleConversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
@@ -160,7 +177,52 @@ export function ArchiveWorkspace() {
     return [...results].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.date.localeCompare(a.date));
   }, [activeDay, activeView, hiddenTags, query, visibleConversations]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    loadArchiveSnapshot()
+      .then((snapshot) => {
+        if (cancelled || !snapshot) return;
+        setConversations(snapshot.conversations ?? []);
+        setSelectedConversationId(snapshot.selectedConversationId ?? snapshot.conversations?.[0]?.id ?? null);
+        setHiddenTags(snapshot.hiddenTags ?? []);
+        setHiddenKinds(snapshot.hiddenKinds ?? ["memory_context", "thinking", "signature"]);
+        setShowMessageTimestamps(snapshot.showMessageTimestamps ?? true);
+        setShowStatusToast(snapshot.showStatusToast ?? false);
+        setDatePreference(snapshot.datePreference ?? "Prefer conversation timestamps");
+        setDarkMode(snapshot.darkMode ?? true);
+        document.documentElement.classList.toggle("dark", snapshot.darkMode ?? true);
+        setToast("Archive restored from local browser storage");
+      })
+      .catch(() => {
+        setToast("Local archive restore skipped");
+      })
+      .finally(() => {
+        if (!cancelled) setArchiveLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!archiveLoaded) return;
+
+    void saveArchiveSnapshot({
+      conversations,
+      selectedConversationId,
+      hiddenTags,
+      hiddenKinds,
+      showMessageTimestamps,
+      showStatusToast,
+      darkMode,
+      datePreference
+    }).catch(() => setToast("Local archive save failed"));
+  }, [archiveLoaded, conversations, darkMode, datePreference, hiddenKinds, hiddenTags, selectedConversationId, showMessageTimestamps, showStatusToast]);
+
   function notify(message: string) {
+    if (!showStatusToast) return;
     setToast(message);
     window.setTimeout(() => setToast("Ready"), 2800);
   }
@@ -266,6 +328,7 @@ export function ArchiveWorkspace() {
     }
     if (command === "Export monthly markdown book") exportMonthlyMarkdown();
     if (command === "Open Code Explorer") setView("Code Explorer");
+    if (command === "Open Activity") setView("Activity");
     if (command === "Create database backup") setModal("backup");
   }
 
@@ -275,7 +338,7 @@ export function ArchiveWorkspace() {
       notify("Import conversations before exporting markdown");
       return;
     }
-    downloadTextFile("archive-export.md", buildMonthlyMarkdown(exportable), "text/markdown;charset=utf-8");
+    downloadTextFile("archive-export.md", buildMonthlyMarkdown(exportable, showMessageTimestamps), "text/markdown;charset=utf-8");
     setModal(null);
     notify("Downloaded archive-export.md");
   }
@@ -307,6 +370,7 @@ export function ArchiveWorkspace() {
     "Import JSON or JSONL file",
     "Export monthly markdown book",
     "Open Code Explorer",
+    "Open Activity",
     "Create database backup"
   ].filter((command) => command.toLowerCase().includes(commandQuery.toLowerCase()));
 
@@ -367,6 +431,7 @@ export function ArchiveWorkspace() {
               <SidebarItem icon={CalendarDays} label="Timeline" active={activeView === "Timeline"} onClick={() => setView("Timeline")} />
               <SidebarItem icon={Tags} label="Tags" active={activeView === "Tags"} onClick={() => setView("Tags")} />
               <SidebarItem icon={Code2} label="Code Explorer" active={activeView === "Code Explorer"} onClick={() => setView("Code Explorer")} />
+              <SidebarItem icon={ChartNoAxesColumn} label="Activity" active={activeView === "Activity"} onClick={() => setView("Activity")} />
               <SidebarItem icon={DatabaseBackup} label="Backups" active={activeView === "Backups"} onClick={() => setView("Backups")} />
             </SidebarSection>
 
@@ -487,6 +552,7 @@ export function ArchiveWorkspace() {
                   actionLabel="View backup status"
                 />
               ) : null}
+              {activeView === "Activity" ? <ActivitySummaryPanel analytics={archiveAnalytics} /> : null}
               {filteredConversations.length === 0 ? (
                 <EmptyPanel
                   title="No conversations loaded"
@@ -544,8 +610,10 @@ export function ArchiveWorkspace() {
                     notify("Snippet downloaded");
                   }}
                 />
+              ) : activeView === "Activity" ? (
+                <ActivityView analytics={archiveAnalytics} conversations={visibleConversations} />
               ) : (
-                <ReaderView selectedConversation={visibleSelectedConversation} activeView={activeView} />
+                <ReaderView selectedConversation={visibleSelectedConversation} activeView={activeView} showTimestamps={showMessageTimestamps} />
               )}
             </article>
           </div>
@@ -615,7 +683,14 @@ export function ArchiveWorkspace() {
             </InspectorSection>
 
             <InspectorSection title="Content Visibility" icon={Eye}>
-              <ContentVisibilityPanel hiddenKinds={hiddenKinds} onToggle={(kind) => toggleMessageKind(kind, setHiddenKinds)} />
+              <ContentVisibilityPanel
+                hiddenKinds={hiddenKinds}
+                showMessageTimestamps={showMessageTimestamps}
+                showStatusToast={showStatusToast}
+                onToggle={(kind) => toggleMessageKind(kind, setHiddenKinds)}
+                onToggleTimestamps={() => setShowMessageTimestamps((current) => !current)}
+                onToggleStatusToast={() => setShowStatusToast((current) => !current)}
+              />
             </InspectorSection>
 
             <InspectorSection title="Extracted Entities" icon={Sparkles}>
@@ -647,7 +722,7 @@ export function ArchiveWorkspace() {
         </aside>
       </div>
 
-      <StatusToast message={toast} />
+      {showStatusToast ? <StatusToast message={toast} /> : null}
 
       <AnimatePresence>
         {commandOpen ? (
@@ -667,7 +742,7 @@ export function ArchiveWorkspace() {
             {modal === "import" ? (
               <div className="space-y-4">
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Pick one or more JSON, JSONL, or NDJSON files. Browser preview imports stay in memory; the Tauri shell will persist through the local storage service.
+                  Pick one or more JSON, JSONL, or NDJSON files. Imports are saved locally in this browser profile so refreshes keep your current archive.
                 </p>
                 <Button onClick={() => fileInputRef.current?.click()}>
                   <Upload className="h-4 w-4" />
@@ -702,6 +777,16 @@ export function ArchiveWorkspace() {
                   }}
                 />
                 <SettingRow label="Theme" value={darkMode ? "Dark" : "Light"} onClick={toggleTheme} />
+                <SettingRow
+                  label="Message timestamps"
+                  value={showMessageTimestamps ? "Shown" : "Hidden"}
+                  onClick={() => setShowMessageTimestamps((current) => !current)}
+                />
+                <SettingRow
+                  label="Status bubble"
+                  value={showStatusToast ? "Shown" : "Hidden"}
+                  onClick={() => setShowStatusToast((current) => !current)}
+                />
                 <SettingRow label="Telemetry" value="Disabled" onClick={() => notify("Telemetry is permanently disabled by default")} />
               </div>
             ) : null}
@@ -739,7 +824,15 @@ export function ArchiveWorkspace() {
   );
 }
 
-function ReaderView({ selectedConversation, activeView }: { selectedConversation: DemoConversation; activeView: ViewName }) {
+function ReaderView({
+  selectedConversation,
+  activeView,
+  showTimestamps
+}: {
+  selectedConversation: DemoConversation;
+  activeView: ViewName;
+  showTimestamps: boolean;
+}) {
   const conversationMessages = selectedConversation.messages ?? [];
 
   return (
@@ -769,9 +862,9 @@ function ReaderView({ selectedConversation, activeView }: { selectedConversation
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.05 }}
             key={`${message.role}-${message.time}-${index}`}
-            className="grid grid-cols-[88px_minmax(0,1fr)] gap-4"
+            className={cn("grid gap-4", showTimestamps ? "grid-cols-[88px_minmax(0,1fr)]" : "grid-cols-1")}
           >
-            <div className="sticky top-4 h-fit text-xs text-muted-foreground">{message.time}</div>
+            {showTimestamps ? <div className="sticky top-4 h-fit text-xs text-muted-foreground">{message.time}</div> : null}
             <div>
               <div className="mb-2 flex items-center gap-2">
                 <Badge className={message.role === "assistant" ? "border-primary/30 text-primary" : ""}>{message.role}</Badge>
@@ -876,6 +969,180 @@ function CodeExplorerView({
   );
 }
 
+function ActivitySummaryPanel({ analytics }: { analytics: ReturnType<typeof buildArchiveAnalytics> }) {
+  return (
+    <div className="mb-3 rounded-md border bg-panel-strong p-3">
+      <h3 className="text-sm font-semibold">Archive Activity</h3>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <MetricTile label="Chats" value={String(analytics.totalConversations)} />
+        <MetricTile label="Messages" value={String(analytics.totalMessages)} />
+        <MetricTile label="Code" value={String(analytics.totalCodeBlocks)} />
+        <MetricTile label="Tools" value={String(analytics.totalToolMessages)} />
+      </div>
+    </div>
+  );
+}
+
+function ActivityView({
+  analytics,
+  conversations
+}: {
+  analytics: ReturnType<typeof buildArchiveAnalytics>;
+  conversations: DemoConversation[];
+}) {
+  return (
+    <div className="mx-auto max-w-5xl px-8 py-8">
+      <div className="mb-8 border-b pb-6">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Badge className="border-primary/30 text-primary">
+            <ChartNoAxesColumn className="mr-1 h-3 w-3" />
+            Activity
+          </Badge>
+          <Badge>{analytics.activeDays} active days</Badge>
+        </div>
+        <h2 className="text-3xl font-semibold leading-tight">Archive Activity</h2>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+          A local analytics view for archive scale, message mix, import shape, and conversation cadence.
+        </p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        <MetricTile label="Conversations" value={String(analytics.totalConversations)} />
+        <MetricTile label="Visible messages" value={String(analytics.totalMessages)} />
+        <MetricTile label="Code blocks" value={String(analytics.totalCodeBlocks)} />
+        <MetricTile label="Tool messages" value={String(analytics.totalToolMessages)} />
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+        <section className="rounded-md border bg-panel p-4">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Daily Heatmap</h3>
+            <span className="text-xs text-muted-foreground">{analytics.heatmap.length} days</span>
+          </div>
+          <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1">
+            {analytics.heatmap.map((day) => (
+              <div
+                key={day.date}
+                title={`${day.date}: ${day.count} conversation${day.count === 1 ? "" : "s"}`}
+                className={cn("aspect-square rounded-sm border", heatmapTone(day.count, analytics.maxDailyCount))}
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-md border bg-panel p-4">
+          <h3 className="mb-4 text-sm font-semibold">Content Mix</h3>
+          <div className="space-y-3">
+            {analytics.kindCounts.map((item) => (
+              <MeterRow key={item.label} label={item.label} value={item.count} max={analytics.totalMessages || 1} />
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <section className="rounded-md border bg-panel p-4">
+          <h3 className="mb-4 text-sm font-semibold">Sources</h3>
+          <div className="space-y-3">
+            {analytics.sourceCounts.map((item) => (
+              <MeterRow key={item.label} label={item.label} value={item.count} max={analytics.totalConversations || 1} />
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-md border bg-panel p-4">
+          <h3 className="mb-4 text-sm font-semibold">Largest Conversations</h3>
+          <div className="space-y-2">
+            {[...conversations]
+              .sort((a, b) => b.count - a.count)
+              .slice(0, 6)
+              .map((conversation) => (
+                <div key={conversation.id} className="flex items-center justify-between gap-3 rounded-md border bg-panel-strong px-3 py-2 text-sm">
+                  <span className="truncate">{conversation.title}</span>
+                  <Badge>{conversation.count}</Badge>
+                </div>
+              ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border bg-panel-strong p-3">
+      <div className="text-2xl font-semibold">{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function MeterRow({ label, value, max }: { label: string; value: number; max: number }) {
+  const width = `${Math.max(4, Math.round((value / max) * 100))}%`;
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span>{value}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary" style={{ width }} />
+      </div>
+    </div>
+  );
+}
+
+function heatmapTone(count: number, max: number) {
+  if (count === 0) return "bg-muted/30 border-border";
+  const ratio = max ? count / max : 0;
+  if (ratio > 0.75) return "border-primary bg-primary";
+  if (ratio > 0.45) return "border-primary/70 bg-primary/70";
+  if (ratio > 0.2) return "border-primary/40 bg-primary/40";
+  return "border-primary/25 bg-primary/20";
+}
+
+function buildArchiveAnalytics(conversations: DemoConversation[]) {
+  const totalMessages = conversations.reduce((sum, conversation) => sum + (conversation.messages?.length ?? conversation.count), 0);
+  const totalCodeBlocks = conversations.reduce((sum, conversation) => sum + conversation.code, 0);
+  const totalToolMessages = conversations.reduce((sum, conversation) => sum + conversation.tools, 0);
+  const dayCounts = new Map<string, number>();
+  const sourceCountsMap = new Map<string, number>();
+  const kindCountsMap = new Map<string, number>();
+
+  for (const conversation of conversations) {
+    dayCounts.set(conversation.date, (dayCounts.get(conversation.date) ?? 0) + 1);
+    sourceCountsMap.set(conversation.source, (sourceCountsMap.get(conversation.source) ?? 0) + 1);
+    for (const message of conversation.messages ?? []) {
+      const label = messageKindOptions.find((option) => option.kind === message.kind)?.label ?? message.kind;
+      kindCountsMap.set(label, (kindCountsMap.get(label) ?? 0) + 1);
+    }
+  }
+
+  const sortedDays = Array.from(dayCounts.keys()).sort();
+  const firstDate = sortedDays[0] ? new Date(`${sortedDays[0]}T00:00:00.000Z`) : new Date();
+  const lastDate = sortedDays[sortedDays.length - 1] ? new Date(`${sortedDays[sortedDays.length - 1]}T00:00:00.000Z`) : new Date();
+  const heatmap: Array<{ date: string; count: number }> = [];
+  const cursor = new Date(firstDate);
+  while (cursor <= lastDate && heatmap.length < 140) {
+    const date = cursor.toISOString().slice(0, 10);
+    heatmap.push({ date, count: dayCounts.get(date) ?? 0 });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return {
+    totalConversations: conversations.length,
+    totalMessages,
+    totalCodeBlocks,
+    totalToolMessages,
+    activeDays: dayCounts.size,
+    maxDailyCount: Math.max(1, ...Array.from(dayCounts.values())),
+    heatmap,
+    sourceCounts: Array.from(sourceCountsMap, ([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+    kindCounts: Array.from(kindCountsMap, ([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count)
+  };
+}
+
 function buildTimelineGroups(conversations: DemoConversation[]) {
   const formatter = new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" });
   const groups = new Map<string, { year: string; month: string; days: string[] }>();
@@ -947,12 +1214,15 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
       const blocks = getContentBlocks(item);
       const time = findFirstTimeLabel(item) ?? String(index + 1).padStart(2, "0");
 
-      return blocks.map((block) => ({
-        role,
-        time,
-        body: normalizeMessageText(block),
-        kind: getMessageKind(block, role)
-      }));
+      return blocks.map((block) => {
+        const body = normalizeMessageText(block);
+        return {
+          role,
+          time,
+          body,
+          kind: getMessageKind(block, role, body)
+        };
+      });
     })
     .filter((message) => message.body.trim().length > 0);
 }
@@ -1031,11 +1301,12 @@ function formatToolUse(record: Record<string, unknown>) {
   return `Tool call: ${name}\nInput:\n${input}`;
 }
 
-function getMessageKind(value: unknown, role?: string): MessageKind {
+function getMessageKind(value: unknown, role?: string, body = ""): MessageKind {
   const record = asRecord(value);
   const type = String(record?.type ?? "").toLowerCase();
   const normalizedRole = String(role ?? "").toLowerCase();
 
+  if (isMemoryContextText(body)) return "memory_context";
   if (["queue-operation", "attachment", "last-prompt"].includes(type)) return "metadata";
   if (type === "thinking") return "thinking";
   if (type === "tool_use") return "tool_use";
@@ -1043,6 +1314,10 @@ function getMessageKind(value: unknown, role?: string): MessageKind {
   if (record?.signature) return "signature";
   if (record?.name && record.input) return "tool_use";
   return "text";
+}
+
+function isMemoryContextText(text: string) {
+  return /^\s*\[Memory context\]/i.test(text) || /^\s*Memory context\s*[-:]/i.test(text);
 }
 
 function extractCodeSnippetsFromText(text: string, conversationId: string, source: string): CodeSnippet[] {
@@ -1130,6 +1405,44 @@ function simpleHash(text: string) {
   return String(hash);
 }
 
+function openArchiveDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("fwm-claude-chat-archive-viewer", 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains("snapshots")) database.createObjectStore("snapshots");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadArchiveSnapshot(): Promise<ArchiveStateSnapshot | undefined> {
+  if (typeof indexedDB === "undefined") return undefined;
+  const database = await openArchiveDb();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction("snapshots", "readonly");
+    const request = transaction.objectStore("snapshots").get("active");
+    request.onsuccess = () => resolve(request.result as ArchiveStateSnapshot | undefined);
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => database.close();
+  });
+}
+
+async function saveArchiveSnapshot(snapshot: ArchiveStateSnapshot) {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openArchiveDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction("snapshots", "readwrite");
+    transaction.objectStore("snapshots").put(snapshot, "active");
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 function detectSourceLabel(payload: unknown) {
   const text = JSON.stringify(payload).slice(0, 3000).toLowerCase();
   if (text.includes("claude") || text.includes("sessionid")) return "Claude Code";
@@ -1138,7 +1451,7 @@ function detectSourceLabel(payload: unknown) {
   return "Generic";
 }
 
-function buildMonthlyMarkdown(conversations: DemoConversation[]) {
+function buildMonthlyMarkdown(conversations: DemoConversation[], includeTimestamps: boolean) {
   const sorted = [...conversations].sort((a, b) => a.date.localeCompare(b.date));
   return [
     "---",
@@ -1162,20 +1475,20 @@ function buildMonthlyMarkdown(conversations: DemoConversation[]) {
         "",
         conversation.excerpt,
         "",
-        formatConversationMarkdownMessages(conversation)
+        formatConversationMarkdownMessages(conversation, includeTimestamps)
       ].join("\n")
     )
   ].join("\n");
 }
 
-function formatConversationMarkdownMessages(conversation: DemoConversation) {
+function formatConversationMarkdownMessages(conversation: DemoConversation, includeTimestamps: boolean) {
   const messages = conversation.messages ?? [];
   if (messages.length === 0) return "_No visible messages after current filters._";
 
   return messages
     .map((message) =>
       [
-        `### ${message.role}${message.kind !== "text" ? ` (${message.kind.replace("_", " ")})` : ""}`,
+        `### ${message.role}${includeTimestamps ? ` - ${message.time}` : ""}${message.kind !== "text" ? ` (${message.kind.replace("_", " ")})` : ""}`,
         "",
         message.body
       ].join("\n")
@@ -1340,15 +1653,39 @@ function TagVisibilityPanel({
 
 function ContentVisibilityPanel({
   hiddenKinds,
-  onToggle
+  showMessageTimestamps,
+  showStatusToast,
+  onToggle,
+  onToggleTimestamps,
+  onToggleStatusToast
 }: {
   hiddenKinds: MessageKind[];
+  showMessageTimestamps: boolean;
+  showStatusToast: boolean;
   onToggle: (kind: MessageKind) => void;
+  onToggleTimestamps: () => void;
+  onToggleStatusToast: () => void;
 }) {
   return (
     <div className="rounded-md border bg-panel-strong p-3">
       <h3 className="text-sm font-semibold">Hide Content Types</h3>
       <p className="mt-1 text-xs leading-5 text-muted-foreground">Hidden types are removed from the reader, Code Explorer, and markdown export.</p>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          className="rounded-md border bg-background px-3 py-2 text-left text-xs hover:border-primary/60"
+          onClick={onToggleTimestamps}
+        >
+          <span className="block font-medium">Timestamps</span>
+          <span className="text-muted-foreground">{showMessageTimestamps ? "Shown" : "Hidden"}</span>
+        </button>
+        <button
+          className="rounded-md border bg-background px-3 py-2 text-left text-xs hover:border-primary/60"
+          onClick={onToggleStatusToast}
+        >
+          <span className="block font-medium">Status bubble</span>
+          <span className="text-muted-foreground">{showStatusToast ? "Shown" : "Hidden"}</span>
+        </button>
+      </div>
       <div className="mt-3 space-y-2">
         {messageKindOptions.map((option) => {
           const hidden = hiddenKinds.includes(option.kind);
@@ -1386,7 +1723,10 @@ function applyMessageVisibility(conversations: DemoConversation[], hiddenKinds: 
 
   return conversations.map((conversation) => {
     if (!conversation.messages) return conversation;
-    const messages = conversation.messages.filter((message) => !hiddenKinds.includes(message.kind));
+    const messages = conversation.messages.filter((message) => {
+      if (hiddenKinds.includes("memory_context") && isMemoryContextText(message.body)) return false;
+      return !hiddenKinds.includes(message.kind);
+    });
     const code = extractCodeSnippetsFromMessages(messages, conversation.id, conversation.title).length;
     const tools = messages.filter((message) => message.kind === "tool_use" || message.kind === "tool_result").length;
     const excerptSource = messages.find((message) => message.kind === "text" && message.body.trim()) ?? messages[0];

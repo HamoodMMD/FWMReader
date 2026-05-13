@@ -4,7 +4,7 @@ import path from "node:path";
 
 export const runtime = "nodejs";
 
-type MessageKind = "text" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
+type MessageKind = "text" | "memory_context" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
 
 interface ConversationMessage {
   role: string;
@@ -131,12 +131,15 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
       const blocks = getContentBlocks(item);
       const time = findFirstTimeLabel(item) ?? String(index + 1).padStart(2, "0");
 
-      return blocks.map((block) => ({
-        role,
-        time,
-        body: normalizeMessageText(block),
-        kind: getMessageKind(block, role)
-      }));
+      return blocks.map((block) => {
+        const body = normalizeMessageText(block);
+        return {
+          role,
+          time,
+          body,
+          kind: getMessageKind(block, role, body)
+        };
+      });
     })
     .filter((message) => message.body.trim().length > 0);
 }
@@ -205,11 +208,12 @@ function formatToolUse(record: Record<string, unknown>) {
   return `Tool call: ${name}\nInput:\n${input}`;
 }
 
-function getMessageKind(value: unknown, role?: string): MessageKind {
+function getMessageKind(value: unknown, role?: string, body = ""): MessageKind {
   const record = asRecord(value);
   const type = String(record?.type ?? "").toLowerCase();
   const normalizedRole = String(role ?? "").toLowerCase();
 
+  if (isMemoryContextText(body)) return "memory_context";
   if (["queue-operation", "attachment", "last-prompt"].includes(type)) return "metadata";
   if (type === "thinking") return "thinking";
   if (type === "tool_use") return "tool_use";
@@ -217,6 +221,10 @@ function getMessageKind(value: unknown, role?: string): MessageKind {
   if (record?.signature) return "signature";
   if (record?.name && record.input) return "tool_use";
   return "text";
+}
+
+function isMemoryContextText(text: string) {
+  return /^\s*\[Memory context\]/i.test(text) || /^\s*Memory context\s*[-:]/i.test(text);
 }
 
 function extractCodeSnippetsFromMessages(messages: ConversationMessage[]) {
