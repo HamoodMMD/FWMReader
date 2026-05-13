@@ -110,6 +110,7 @@ export function ArchiveWorkspace() {
   const [datePreference, setDatePreference] = useState("Prefer conversation timestamps");
   const [watchPath, setWatchPath] = useState("");
   const [activeDay, setActiveDay] = useState<string | null>(null);
+  const [hiddenTags, setHiddenTags] = useState<string[]>([]);
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({
     "2026-May": true,
     "2026-April": true
@@ -127,9 +128,10 @@ export function ArchiveWorkspace() {
   const selectedSnippet = codeSnippets.find((snippet) => snippet.id === selectedSnippetId) ?? codeSnippets[0];
   const selectedEntities = useMemo(() => extractEntities(selectedConversation), [selectedConversation]);
   const timelineGroups = useMemo(() => buildTimelineGroups(conversations), [conversations]);
+  const allTags = useMemo(() => Array.from(new Set(conversations.flatMap(getConversationTags))).sort(), [conversations]);
 
   const filteredConversations = useMemo(() => {
-    let results = conversations;
+    let results = conversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
     if (activeView === "Code Explorer") results = results.filter((conversation) => conversation.code > 0);
     if (activeView === "Timeline" && activeDay) results = results.filter((conversation) => conversation.date === activeDay);
     if (query) {
@@ -138,7 +140,7 @@ export function ArchiveWorkspace() {
       );
     }
     return [...results].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.date.localeCompare(a.date));
-  }, [activeDay, activeView, conversations, query]);
+  }, [activeDay, activeView, conversations, hiddenTags, query]);
 
   function notify(message: string) {
     setToast(message);
@@ -202,6 +204,41 @@ export function ArchiveWorkspace() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
+  async function loadWatchFolder() {
+    if (!watchPath.trim()) {
+      notify("Enter a folder path first");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/folder-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderPath: watchPath.trim() })
+      });
+      const result = (await response.json()) as { conversations?: DemoConversation[]; filesScanned?: number; error?: string };
+      if (!response.ok || result.error) {
+        notify(result.error ?? "Could not scan folder");
+        return;
+      }
+
+      const imported = result.conversations ?? [];
+      const existing = new Set(conversations.map((conversation) => conversation.sourceKey));
+      const fresh = imported.filter((conversation) => !existing.has(conversation.sourceKey));
+      setConversations((current) => [...fresh, ...current]);
+
+      if (fresh[0]) {
+        setSelectedConversationId(fresh[0].id);
+        setSelectedSnippetId(extractCodeSnippetsFromConversation(fresh[0])[0]?.id ?? null);
+      }
+      setActiveView("Recent");
+      setModal(null);
+      notify(`Loaded ${fresh.length} new file${fresh.length === 1 ? "" : "s"} from ${result.filesScanned ?? imported.length} scanned`);
+    } catch {
+      notify("Could not reach local folder scanner");
+    }
+  }
+
   function runCommand(command: string) {
     setCommandOpen(false);
     setCommandQuery("");
@@ -215,11 +252,12 @@ export function ArchiveWorkspace() {
   }
 
   function exportMonthlyMarkdown() {
-    if (conversations.length === 0) {
+    const exportable = conversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
+    if (exportable.length === 0) {
       notify("Import conversations before exporting markdown");
       return;
     }
-    downloadTextFile("archive-export.md", buildMonthlyMarkdown(conversations), "text/markdown;charset=utf-8");
+    downloadTextFile("archive-export.md", buildMonthlyMarkdown(exportable), "text/markdown;charset=utf-8");
     setModal(null);
     notify("Downloaded archive-export.md");
   }
@@ -412,7 +450,17 @@ export function ArchiveWorkspace() {
                 <span className="text-xs font-semibold uppercase text-muted-foreground">{activeView}</span>
                 <Badge>{filteredConversations.length}</Badge>
               </div>
-              {activeView === "Tags" ? <EmptyPanel title="Tags are ready" body="Tag creation will attach labels to normalized conversations." /> : null}
+              {activeView === "Tags" ? (
+                <TagVisibilityPanel
+                  tags={allTags}
+                  hiddenTags={hiddenTags}
+                  onToggle={(tag) =>
+                    setHiddenTags((current) =>
+                      current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
+                    )
+                  }
+                />
+              ) : null}
               {activeView === "Backups" ? (
                 <EmptyPanel
                   title="Backup center"
@@ -523,6 +571,31 @@ export function ArchiveWorkspace() {
               <KeyValue label="Active view" value={activeView} />
             </InspectorSection>
 
+            <InspectorSection title="Tag Visibility" icon={Tags}>
+              {allTags.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Import files to generate tags.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {allTags.map((tag) => (
+                    <button
+                      key={tag}
+                      className={cn(
+                        "rounded-sm border px-2 py-1 text-xs",
+                        hiddenTags.includes(tag) ? "bg-muted text-muted-foreground line-through" : "bg-panel-strong text-foreground"
+                      )}
+                      onClick={() =>
+                        setHiddenTags((current) =>
+                          current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
+                        )
+                      }
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </InspectorSection>
+
             <InspectorSection title="Extracted Entities" icon={Sparkles}>
               {selectedEntities.map((entity) => (
                 <EntityPill
@@ -583,17 +656,12 @@ export function ArchiveWorkspace() {
             {modal === "watch" ? (
               <div className="space-y-4">
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Watch folders need the Tauri desktop filesystem bridge. This browser preview will not fake a watch-folder import.
+                  Load JSON, JSONL, and NDJSON files from a local folder path. This scans the folder once; continuous watching belongs in the desktop shell.
                 </p>
                 <Input value={watchPath} onChange={(event) => setWatchPath(event.target.value)} placeholder="E:\\Archives\\Claude" />
-                <Button
-                  onClick={() => {
-                    setModal(null);
-                    notify(watchPath ? `Desktop watch path noted: ${watchPath}` : "Watch folder requires the desktop shell");
-                  }}
-                >
+                <Button onClick={loadWatchFolder}>
                   <FolderSearch className="h-4 w-4" />
-                  Close
+                  Load folder
                 </Button>
               </div>
             ) : null}
@@ -862,8 +930,7 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
         body
       };
     })
-    .filter((message) => message.body.trim().length > 0)
-    .slice(0, 200);
+    .filter((message) => message.body.trim().length > 0);
 }
 
 function isDisplayMessageRecord(item: unknown) {
@@ -1142,6 +1209,58 @@ function EmptyPanel({ title, body, action, actionLabel }: { title: string; body:
       ) : null}
     </div>
   );
+}
+
+function TagVisibilityPanel({
+  tags,
+  hiddenTags,
+  onToggle
+}: {
+  tags: string[];
+  hiddenTags: string[];
+  onToggle: (tag: string) => void;
+}) {
+  if (tags.length === 0) {
+    return <EmptyPanel title="No tags yet" body="Import files to generate source, code, tool, and date tags." />;
+  }
+
+  return (
+    <div className="mb-3 rounded-md border bg-panel-strong p-3">
+      <h3 className="text-sm font-semibold">Hide Tags</h3>
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">Hidden tags are excluded from the list and markdown export.</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {tags.map((tag) => (
+          <button
+            key={tag}
+            className={cn(
+              "rounded-sm border px-2 py-1 text-xs",
+              hiddenTags.includes(tag) ? "bg-muted text-muted-foreground line-through" : "bg-background text-foreground"
+            )}
+            onClick={() => onToggle(tag)}
+          >
+            {tag}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getConversationTags(conversation: DemoConversation) {
+  const tags = [
+    conversation.source,
+    conversation.imported ? "imported" : "local",
+    conversation.code > 0 ? "contains-code" : "no-code",
+    conversation.tools > 0 ? "contains-tools" : "no-tools",
+    conversation.date.slice(0, 7)
+  ];
+  return Array.from(new Set(tags.filter(Boolean)));
+}
+
+function isHiddenByTags(conversation: DemoConversation, hiddenTags: string[]) {
+  if (hiddenTags.length === 0) return false;
+  const tags = getConversationTags(conversation);
+  return tags.some((tag) => hiddenTags.includes(tag));
 }
 
 function StatusToast({ message }: { message: string }) {
