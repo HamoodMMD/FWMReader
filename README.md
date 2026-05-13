@@ -20,10 +20,18 @@ GitHub repo description:
 
 ```bash
 npm install
-npm run dev
+npm run serve
 ```
 
-Open `http://localhost:3000`.
+Open `http://127.0.0.1:3000`.
+
+Use the fast local validation workflow:
+
+```bash
+npm run update
+```
+
+`npm run update` runs TypeScript and ESLint checks without invoking a production build.
 
 For desktop development:
 
@@ -33,15 +41,45 @@ npm run tauri dev
 
 ## Project Status
 
-This is the first architecture milestone. It includes:
+Current local app capabilities include:
 
 - Next.js 15 + TypeScript + TailwindCSS app shell
 - Tauri desktop wrapper scaffold
 - SQLite schema with FTS5 and migration support
 - Parser abstraction layer with Claude, OpenAI, and generic parser samples
-- Import pipeline design with hashing and duplicate prevention
+- JSON, JSONL, NDJSON, and folder import with hashing and duplicate prevention
+- Dynamic timeline navigation from imported conversation dates
+- Reconstructed reader view with hide/show controls for timestamps, memory context, thinking, tool calls, tool results, signatures, metadata, and tags
+- Search across imported message bodies, code snippets, entities, tags, titles, sources, dates, and raw preview fallback
+- Code Explorer for fenced code blocks
+- Markdown export that respects visibility filters
+- Local refresh persistence through browser IndexedDB, with a user-facing enable/disable toggle
+- Activity page with archive totals, content mix, source breakdown, largest conversations, and compact monthly heatmaps
+- Provider-location help modal for finding common local AI assistant chat archives
 - Search, timeline, markdown export, backup, and AI extension service interfaces
 - Privacy-safe Git defaults and long-term repo documentation
+
+## Provider Chat Locations
+
+These are common local starting points for finding AI assistant archives. Importing or scanning reads files into the app; it does not modify the original files or change their filesystem modified dates.
+
+| Provider | Data Location | What You Get |
+| --- | --- | --- |
+| Claude Code | `~/.claude/projects/` | Full conversation history, tool use, thinking, costs |
+| Gemini CLI | `~/.gemini/history/` | Conversation history with tool calls |
+| Antigravity | `~/.gemini/antigravity/` | Conversation state under `brain/` plus token monitor data under `.token-monitor/rpc-cache/v1/` |
+| Codex CLI | `~/.codex/sessions/` | Session rollouts with agent responses |
+| Cline | `~/.cline/tasks/` | Task-based conversation history |
+| Cursor | `~/.cursor/` | Composer and chat conversations |
+| Aider | Project directories | Chat history and edit logs |
+| OpenCode | `~/.local/share/opencode/` | Conversation sessions and tool results |
+| ForgeCode | `~/.forge/.forge.db` | Conversation history from SQLite database |
+
+## Privacy And Persistence
+
+The app is local-first. Imported archives can be persisted in the current browser profile using the **Keep archive after refresh** setting. This stores the app's local parsed snapshot in IndexedDB, not in Git.
+
+Raw imported JSON, JSONL, NDJSON, databases, generated exports, backups, and embeddings are ignored by `.gitignore` by default.
 
 ## Private Data Safety
 
