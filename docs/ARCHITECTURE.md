@@ -1,6 +1,6 @@
 # Architecture
 
-Claude Chat Archive Viewer is split into layers that can evolve independently.
+FWM's Claude Chat Archive Viewer is split into layers that can evolve independently.
 
 ## Layers
 

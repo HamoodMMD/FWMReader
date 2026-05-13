@@ -2,7 +2,7 @@
   "name": "claude-chat-archive-viewer",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first desktop archive browser for Claude Code, ChatGPT, and AI assistant JSON exports.",
+  "description": "FWM's local-first desktop archive viewer for Claude Code, ChatGPT, and AI assistant JSON/JSONL exports.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

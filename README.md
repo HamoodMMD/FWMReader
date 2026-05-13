@@ -1,8 +1,12 @@
-# Claude Chat Archive Viewer
+# FWM's Claude Chat Archive Viewer
 
-A desktop-first, local-first archive browser for Claude Code, ChatGPT, and generic AI assistant JSON conversation exports.
+FWM's local-first desktop archive viewer for Claude Code, ChatGPT, and AI assistant JSON/JSONL exports.
 
 The app turns raw JSON chat logs into a clean, searchable, readable knowledge archive with timeline navigation, reconstructed conversations, code extraction, markdown export, and a privacy-safe storage model.
+
+GitHub repo description:
+
+> FWM's local-first desktop archive viewer for Claude Code, ChatGPT, and AI assistant JSON/JSONL exports with timeline browsing, code extraction, markdown export, and privacy-safe storage.
 
 ## Principles
 
@@ -53,4 +57,3 @@ Ignored by default:
 - `*.db`, `*.sqlite`, `*.jsonl`, raw common chat export names
 
 See [Backup & Recovery](docs/BACKUP_RECOVERY.md) and [Git Workflow](docs/GIT_WORKFLOW.md).
-

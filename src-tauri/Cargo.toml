@@ -2,7 +2,7 @@
 name = "claude-chat-archive-viewer"
 version = "0.1.0"
 description = "Local-first AI conversation archive browser"
-authors = ["Claude Chat Archive Viewer contributors"]
+authors = ["FWM's Claude Chat Archive Viewer contributors"]
 license = "MIT"
 repository = ""
 edition = "2021"

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Claude Chat Archive Viewer",
+  title: "FWM's Claude Chat Archive Viewer",
   description: "Local-first AI conversation archive browser"
 };
 

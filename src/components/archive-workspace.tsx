@@ -271,7 +271,7 @@ export function ArchiveWorkspace() {
               <Archive className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold">Claude Chat Archive Viewer</h1>
+              <h1 className="truncate text-sm font-semibold">FWM&apos;s Claude Chat Archive Viewer</h1>
               <p className="text-xs text-muted-foreground">Local archive console</p>
             </div>
           </div>
@@ -847,12 +847,13 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
   const sourceMessages = getMessageArray(payload);
 
   return sourceMessages
+    .filter(isDisplayMessageRecord)
     .map((item, index) => {
       const record = asRecord(item);
       const nestedMessage = asRecord(record?.message);
       const author = asRecord(record?.author) ?? asRecord(nestedMessage?.author);
       const role = String(record?.role ?? nestedMessage?.role ?? author?.role ?? record?.speaker ?? record?.author_role ?? record?.type ?? `message ${index + 1}`);
-      const body = normalizeMessageText(record?.content ?? record?.text ?? record?.body ?? record?.message ?? item);
+      const body = normalizeMessageText(nestedMessage?.content ?? record?.content ?? record?.text ?? record?.body ?? record?.message ?? item);
       const timestamp = findFirstTimestamp(item);
 
       return {
@@ -863,6 +864,17 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
     })
     .filter((message) => message.body.trim().length > 0)
     .slice(0, 200);
+}
+
+function isDisplayMessageRecord(item: unknown) {
+  const record = asRecord(item);
+  if (!record) return true;
+
+  const type = String(record.type ?? "").toLowerCase();
+  if (["queue-operation", "attachment", "last-prompt"].includes(type)) return false;
+  if (type && !["user", "assistant", "system", "tool", "message"].includes(type)) return false;
+
+  return Boolean(record.message ?? record.content ?? record.text ?? record.body);
 }
 
 function getMessageArray(payload: unknown): unknown[] {

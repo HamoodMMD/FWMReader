@@ -1,6 +1,6 @@
 # Contributing
 
-Claude Chat Archive Viewer is designed as a serious local-first knowledge tool. Keep changes modular, reversible, and privacy-safe.
+FWM's Claude Chat Archive Viewer is designed as a serious local-first knowledge tool. Keep changes modular, reversible, and privacy-safe.
 
 ## Development
 

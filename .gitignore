@@ -38,7 +38,7 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 
-# Claude Chat Archive Viewer private local data
+# FWM's Claude Chat Archive Viewer private local data
 # These paths may contain raw conversations, embeddings, exports, or databases.
 .local-data/
 .archive-viewer/
