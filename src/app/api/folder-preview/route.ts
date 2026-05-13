@@ -4,10 +4,13 @@ import path from "node:path";
 
 export const runtime = "nodejs";
 
+type MessageKind = "text" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
+
 interface ConversationMessage {
   role: string;
   time: string;
   body: string;
+  kind: MessageKind;
 }
 
 interface PreviewConversation {
@@ -120,14 +123,20 @@ function summarizeImportedJson(payload: unknown, fileName: string, rawText: stri
 function extractConversationMessages(payload: unknown): ConversationMessage[] {
   return getMessageArray(payload)
     .filter(isDisplayMessageRecord)
-    .map((item, index) => {
+    .flatMap((item, index) => {
       const record = asRecord(item);
       const nestedMessage = asRecord(record?.message);
       const author = asRecord(record?.author) ?? asRecord(nestedMessage?.author);
       const role = String(record?.role ?? nestedMessage?.role ?? author?.role ?? record?.speaker ?? record?.author_role ?? record?.type ?? `message ${index + 1}`);
-      const body = normalizeMessageText(nestedMessage?.content ?? record?.content ?? record?.text ?? record?.body ?? record?.message ?? item);
-      const timestamp = findFirstTimestamp(item);
-      return { role, time: timestamp ? timestamp.slice(11, 16) : String(index + 1).padStart(2, "0"), body };
+      const blocks = getContentBlocks(item);
+      const time = findFirstTimeLabel(item) ?? String(index + 1).padStart(2, "0");
+
+      return blocks.map((block) => ({
+        role,
+        time,
+        body: normalizeMessageText(block),
+        kind: getMessageKind(block, role)
+      }));
     })
     .filter((message) => message.body.trim().length > 0);
 }
@@ -137,8 +146,21 @@ function isDisplayMessageRecord(item: unknown) {
   if (!record) return true;
   const type = String(record.type ?? "").toLowerCase();
   if (["queue-operation", "attachment", "last-prompt"].includes(type)) return false;
-  if (type && !["user", "assistant", "system", "tool", "message"].includes(type)) return false;
-  return Boolean(record.message ?? record.content ?? record.text ?? record.body);
+  if (type && !["user", "assistant", "system", "tool", "message", "thinking", "tool_use", "tool_result"].includes(type)) return false;
+  return Boolean(record.message ?? record.content ?? record.text ?? record.body ?? record.thinking ?? record.signature ?? record.input ?? record.result);
+}
+
+function getContentBlocks(item: unknown): unknown[] {
+  const record = asRecord(item);
+  const nestedMessage = asRecord(record?.message);
+  const content = nestedMessage?.content ?? record?.content;
+
+  if (Array.isArray(content)) return content;
+  if (content !== undefined) return [content];
+  if (record?.text !== undefined) return [record.text];
+  if (record?.body !== undefined) return [record.body];
+  if (nestedMessage) return [nestedMessage];
+  return [item];
 }
 
 function getMessageArray(payload: unknown): unknown[] {
@@ -157,11 +179,44 @@ function normalizeMessageText(value: unknown): string {
   if (Array.isArray(value)) return value.map(normalizeMessageText).filter(Boolean).join("\n\n");
   const record = asRecord(value);
   if (!record) return JSON.stringify(value, null, 2);
+  const type = String(record.type ?? "").toLowerCase();
+
+  if (type === "thinking") {
+    return typeof record.thinking === "string" && record.thinking.trim() ? record.thinking.trim() : "[thinking block]";
+  }
+  if (type === "tool_use") {
+    return formatToolUse(record);
+  }
+  if (type === "tool_result") {
+    return normalizeMessageText(record.content ?? record.result ?? record.output ?? "[tool result]");
+  }
+  if (record.signature && !record.text && !record.content) return "[signature block]";
   if (typeof record.text === "string") return record.text.trim();
   if (typeof record.content === "string") return record.content.trim();
   if (Array.isArray(record.parts)) return record.parts.map(normalizeMessageText).join("\n\n");
   if (Array.isArray(record.content)) return record.content.map(normalizeMessageText).join("\n\n");
+  if (record.name && record.input) return formatToolUse(record);
   return JSON.stringify(record, null, 2);
+}
+
+function formatToolUse(record: Record<string, unknown>) {
+  const name = typeof record.name === "string" ? record.name : "tool";
+  const input = record.input !== undefined ? JSON.stringify(record.input, null, 2) : "{}";
+  return `Tool call: ${name}\nInput:\n${input}`;
+}
+
+function getMessageKind(value: unknown, role?: string): MessageKind {
+  const record = asRecord(value);
+  const type = String(record?.type ?? "").toLowerCase();
+  const normalizedRole = String(role ?? "").toLowerCase();
+
+  if (["queue-operation", "attachment", "last-prompt"].includes(type)) return "metadata";
+  if (type === "thinking") return "thinking";
+  if (type === "tool_use") return "tool_use";
+  if (type === "tool_result" || normalizedRole === "tool") return "tool_result";
+  if (record?.signature) return "signature";
+  if (record?.name && record.input) return "tool_use";
+  return "text";
 }
 
 function extractCodeSnippetsFromMessages(messages: ConversationMessage[]) {
@@ -175,6 +230,12 @@ function findFirstTimestamp(value: unknown): string | undefined {
   if (iso) return iso[0].slice(0, 10);
   const dateOnly = text.match(/\d{4}-\d{2}-\d{2}/);
   return dateOnly?.[0];
+}
+
+function findFirstTimeLabel(value: unknown): string | undefined {
+  const text = JSON.stringify(value);
+  const iso = text.match(/\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}):\d{2}(?:\.\d+)?Z?/);
+  return iso?.[1];
 }
 
 function detectSourceLabel(payload: unknown) {

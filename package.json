@@ -5,6 +5,7 @@
   "description": "FWM's local-first desktop archive viewer for Claude Code, ChatGPT, and AI assistant JSON/JSONL exports.",
   "scripts": {
     "dev": "next dev",
+    "serve": "next dev --hostname 127.0.0.1 --port 3000",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",

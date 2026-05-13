@@ -42,11 +42,22 @@ import { cn } from "@/lib/utils";
 
 type ViewName = "Recent" | "Timeline" | "Tags" | "Code Explorer" | "Backups";
 type ModalName = "import" | "watch" | "settings" | "backup" | "export" | null;
+type MessageKind = "text" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
+
+const messageKindOptions: Array<{ kind: MessageKind; label: string; description: string }> = [
+  { kind: "text", label: "Text messages", description: "User, assistant, and system prose." },
+  { kind: "thinking", label: "Thinking blocks", description: "Claude thinking content and reasoning payloads." },
+  { kind: "tool_use", label: "Tool calls", description: "Read, edit, search, shell, and other tool request blocks." },
+  { kind: "tool_result", label: "Tool results", description: "Tool output returned into the conversation." },
+  { kind: "signature", label: "Signatures", description: "Long verification signatures and opaque safety payloads." },
+  { kind: "metadata", label: "Metadata noise", description: "Low-value internal or archive bookkeeping entries." }
+];
 
 interface ConversationMessage {
   role: string;
   time: string;
   body: string;
+  kind: MessageKind;
 }
 
 interface DemoConversation {
@@ -111,6 +122,7 @@ export function ArchiveWorkspace() {
   const [watchPath, setWatchPath] = useState("");
   const [activeDay, setActiveDay] = useState<string | null>(null);
   const [hiddenTags, setHiddenTags] = useState<string[]>([]);
+  const [hiddenKinds, setHiddenKinds] = useState<MessageKind[]>(["thinking", "signature"]);
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({
     "2026-May": true,
     "2026-April": true
@@ -121,17 +133,23 @@ export function ArchiveWorkspace() {
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? conversations[0] ?? emptyConversation;
   const hasImportedConversations = conversations.length > 0;
 
+  const visibleConversations = useMemo(() => applyMessageVisibility(conversations, hiddenKinds), [conversations, hiddenKinds]);
+
   const codeSnippets = useMemo(() => {
-    return conversations.flatMap(extractCodeSnippetsFromConversation);
-  }, [conversations]);
+    return visibleConversations.flatMap(extractCodeSnippetsFromConversation);
+  }, [visibleConversations]);
 
   const selectedSnippet = codeSnippets.find((snippet) => snippet.id === selectedSnippetId) ?? codeSnippets[0];
-  const selectedEntities = useMemo(() => extractEntities(selectedConversation), [selectedConversation]);
-  const timelineGroups = useMemo(() => buildTimelineGroups(conversations), [conversations]);
+  const visibleSelectedConversation = useMemo(
+    () => applyMessageVisibility([selectedConversation], hiddenKinds)[0] ?? selectedConversation,
+    [hiddenKinds, selectedConversation]
+  );
+  const selectedEntities = useMemo(() => extractEntities(visibleSelectedConversation), [visibleSelectedConversation]);
+  const timelineGroups = useMemo(() => buildTimelineGroups(visibleConversations), [visibleConversations]);
   const allTags = useMemo(() => Array.from(new Set(conversations.flatMap(getConversationTags))).sort(), [conversations]);
 
   const filteredConversations = useMemo(() => {
-    let results = conversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
+    let results = visibleConversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
     if (activeView === "Code Explorer") results = results.filter((conversation) => conversation.code > 0);
     if (activeView === "Timeline" && activeDay) results = results.filter((conversation) => conversation.date === activeDay);
     if (query) {
@@ -140,7 +158,7 @@ export function ArchiveWorkspace() {
       );
     }
     return [...results].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.date.localeCompare(a.date));
-  }, [activeDay, activeView, conversations, hiddenTags, query]);
+  }, [activeDay, activeView, hiddenTags, query, visibleConversations]);
 
   function notify(message: string) {
     setToast(message);
@@ -252,7 +270,7 @@ export function ArchiveWorkspace() {
   }
 
   function exportMonthlyMarkdown() {
-    const exportable = conversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
+    const exportable = visibleConversations.filter((conversation) => !isHiddenByTags(conversation, hiddenTags));
     if (exportable.length === 0) {
       notify("Import conversations before exporting markdown");
       return;
@@ -527,7 +545,7 @@ export function ArchiveWorkspace() {
                   }}
                 />
               ) : (
-                <ReaderView selectedConversation={selectedConversation} activeView={activeView} />
+                <ReaderView selectedConversation={visibleSelectedConversation} activeView={activeView} />
               )}
             </article>
           </div>
@@ -594,6 +612,10 @@ export function ArchiveWorkspace() {
                   ))}
                 </div>
               )}
+            </InspectorSection>
+
+            <InspectorSection title="Content Visibility" icon={Eye}>
+              <ContentVisibilityPanel hiddenKinds={hiddenKinds} onToggle={(kind) => toggleMessageKind(kind, setHiddenKinds)} />
             </InspectorSection>
 
             <InspectorSection title="Extracted Entities" icon={Sparkles}>
@@ -746,13 +768,14 @@ function ReaderView({ selectedConversation, activeView }: { selectedConversation
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.05 }}
-            key={`${message.role}-${message.time}`}
+            key={`${message.role}-${message.time}-${index}`}
             className="grid grid-cols-[88px_minmax(0,1fr)] gap-4"
           >
             <div className="sticky top-4 h-fit text-xs text-muted-foreground">{message.time}</div>
             <div>
               <div className="mb-2 flex items-center gap-2">
                 <Badge className={message.role === "assistant" ? "border-primary/30 text-primary" : ""}>{message.role}</Badge>
+                {message.kind !== "text" ? <Badge>{messageKindOptions.find((option) => option.kind === message.kind)?.label ?? message.kind}</Badge> : null}
               </div>
               <div className="reader-prose rounded-md border bg-panel p-4 text-sm leading-7">
                 {message.body.startsWith("```") ? (
@@ -916,19 +939,20 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
 
   return sourceMessages
     .filter(isDisplayMessageRecord)
-    .map((item, index) => {
+    .flatMap((item, index) => {
       const record = asRecord(item);
       const nestedMessage = asRecord(record?.message);
       const author = asRecord(record?.author) ?? asRecord(nestedMessage?.author);
       const role = String(record?.role ?? nestedMessage?.role ?? author?.role ?? record?.speaker ?? record?.author_role ?? record?.type ?? `message ${index + 1}`);
-      const body = normalizeMessageText(nestedMessage?.content ?? record?.content ?? record?.text ?? record?.body ?? record?.message ?? item);
-      const timestamp = findFirstTimestamp(item);
+      const blocks = getContentBlocks(item);
+      const time = findFirstTimeLabel(item) ?? String(index + 1).padStart(2, "0");
 
-      return {
+      return blocks.map((block) => ({
         role,
-        time: timestamp ? timestamp.slice(11, 16) : String(index + 1).padStart(2, "0"),
-        body
-      };
+        time,
+        body: normalizeMessageText(block),
+        kind: getMessageKind(block, role)
+      }));
     })
     .filter((message) => message.body.trim().length > 0);
 }
@@ -939,9 +963,22 @@ function isDisplayMessageRecord(item: unknown) {
 
   const type = String(record.type ?? "").toLowerCase();
   if (["queue-operation", "attachment", "last-prompt"].includes(type)) return false;
-  if (type && !["user", "assistant", "system", "tool", "message"].includes(type)) return false;
+  if (type && !["user", "assistant", "system", "tool", "message", "thinking", "tool_use", "tool_result"].includes(type)) return false;
 
-  return Boolean(record.message ?? record.content ?? record.text ?? record.body);
+  return Boolean(record.message ?? record.content ?? record.text ?? record.body ?? record.thinking ?? record.signature ?? record.input ?? record.result);
+}
+
+function getContentBlocks(item: unknown): unknown[] {
+  const record = asRecord(item);
+  const nestedMessage = asRecord(record?.message);
+  const content = nestedMessage?.content ?? record?.content;
+
+  if (Array.isArray(content)) return content;
+  if (content !== undefined) return [content];
+  if (record?.text !== undefined) return [record.text];
+  if (record?.body !== undefined) return [record.body];
+  if (nestedMessage) return [nestedMessage];
+  return [item];
 }
 
 function getMessageArray(payload: unknown): unknown[] {
@@ -967,12 +1004,45 @@ function normalizeMessageText(value: unknown): string {
 
   const record = asRecord(value);
   if (!record) return JSON.stringify(value, null, 2);
+  const type = String(record.type ?? "").toLowerCase();
+
+  if (type === "thinking") {
+    return typeof record.thinking === "string" && record.thinking.trim() ? record.thinking.trim() : "[thinking block]";
+  }
+  if (type === "tool_use") {
+    return formatToolUse(record);
+  }
+  if (type === "tool_result") {
+    return normalizeMessageText(record.content ?? record.result ?? record.output ?? "[tool result]");
+  }
+  if (record.signature && !record.text && !record.content) return "[signature block]";
   if (typeof record.text === "string") return record.text.trim();
   if (typeof record.content === "string") return record.content.trim();
   if (Array.isArray(record.parts)) return record.parts.map(normalizeMessageText).join("\n\n");
   if (Array.isArray(record.content)) return record.content.map(normalizeMessageText).join("\n\n");
+  if (record.name && record.input) return formatToolUse(record);
 
   return JSON.stringify(record, null, 2);
+}
+
+function formatToolUse(record: Record<string, unknown>) {
+  const name = typeof record.name === "string" ? record.name : "tool";
+  const input = record.input !== undefined ? JSON.stringify(record.input, null, 2) : "{}";
+  return `Tool call: ${name}\nInput:\n${input}`;
+}
+
+function getMessageKind(value: unknown, role?: string): MessageKind {
+  const record = asRecord(value);
+  const type = String(record?.type ?? "").toLowerCase();
+  const normalizedRole = String(role ?? "").toLowerCase();
+
+  if (["queue-operation", "attachment", "last-prompt"].includes(type)) return "metadata";
+  if (type === "thinking") return "thinking";
+  if (type === "tool_use") return "tool_use";
+  if (type === "tool_result" || normalizedRole === "tool") return "tool_result";
+  if (record?.signature) return "signature";
+  if (record?.name && record.input) return "tool_use";
+  return "text";
 }
 
 function extractCodeSnippetsFromText(text: string, conversationId: string, source: string): CodeSnippet[] {
@@ -993,7 +1063,7 @@ function extractCodeSnippetsFromText(text: string, conversationId: string, sourc
 
 function extractCodeSnippetsFromConversation(conversation: DemoConversation): CodeSnippet[] {
   const fromMessages = extractCodeSnippetsFromMessages(conversation.messages ?? [], conversation.id, conversation.title);
-  if (fromMessages.length > 0) return fromMessages;
+  if (conversation.messages) return fromMessages;
   return extractCodeSnippetsFromText(conversation.rawText ?? conversation.rawPreview ?? "", conversation.id, conversation.title);
 }
 
@@ -1009,7 +1079,8 @@ function extractCodeSnippetsFromMessages(messagesToSearch: ConversationMessage[]
 }
 
 function extractEntities(conversation: DemoConversation): ExtractedEntity[] {
-  const text = `${conversation.excerpt}\n${conversation.rawPreview ?? ""}`;
+  const messageText = conversation.messages?.map((message) => message.body).join("\n") ?? "";
+  const text = `${conversation.excerpt}\n${messageText || conversation.rawPreview || ""}`;
   const entities: ExtractedEntity[] = [];
 
   for (const match of text.matchAll(/\bhttps?:\/\/[^\s<>)"']+/gi)) {
@@ -1039,6 +1110,12 @@ function findFirstTimestamp(value: unknown): string | undefined {
   if (iso) return iso[0].slice(0, 10);
   const dateOnly = text.match(/\d{4}-\d{2}-\d{2}/);
   return dateOnly?.[0];
+}
+
+function findFirstTimeLabel(value: unknown): string | undefined {
+  const text = JSON.stringify(value);
+  const iso = text.match(/\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}):\d{2}(?:\.\d+)?Z?/);
+  return iso?.[1];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1085,10 +1162,25 @@ function buildMonthlyMarkdown(conversations: DemoConversation[]) {
         "",
         conversation.excerpt,
         "",
-        conversation.rawPreview ? "```text\n" + conversation.rawPreview.slice(0, 1200) + "\n```" : ""
+        formatConversationMarkdownMessages(conversation)
       ].join("\n")
     )
   ].join("\n");
+}
+
+function formatConversationMarkdownMessages(conversation: DemoConversation) {
+  const messages = conversation.messages ?? [];
+  if (messages.length === 0) return "_No visible messages after current filters._";
+
+  return messages
+    .map((message) =>
+      [
+        `### ${message.role}${message.kind !== "text" ? ` (${message.kind.replace("_", " ")})` : ""}`,
+        "",
+        message.body
+      ].join("\n")
+    )
+    .join("\n\n");
 }
 
 function downloadTextFile(fileName: string, content: string, type: string) {
@@ -1244,6 +1336,70 @@ function TagVisibilityPanel({
       </div>
     </div>
   );
+}
+
+function ContentVisibilityPanel({
+  hiddenKinds,
+  onToggle
+}: {
+  hiddenKinds: MessageKind[];
+  onToggle: (kind: MessageKind) => void;
+}) {
+  return (
+    <div className="rounded-md border bg-panel-strong p-3">
+      <h3 className="text-sm font-semibold">Hide Content Types</h3>
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">Hidden types are removed from the reader, Code Explorer, and markdown export.</p>
+      <div className="mt-3 space-y-2">
+        {messageKindOptions.map((option) => {
+          const hidden = hiddenKinds.includes(option.kind);
+          return (
+            <button
+              key={option.kind}
+              className={cn(
+                "w-full rounded-md border px-3 py-2 text-left text-xs transition hover:border-primary/60",
+                hidden ? "bg-muted text-muted-foreground" : "bg-background text-foreground"
+              )}
+              onClick={() => onToggle(option.kind)}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className={cn("font-medium", hidden && "line-through")}>{option.label}</span>
+                <span>{hidden ? "Hidden" : "Shown"}</span>
+              </div>
+              <p className="mt-1 leading-5 text-muted-foreground">{option.description}</p>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function toggleMessageKind(
+  kind: MessageKind,
+  setHiddenKinds: React.Dispatch<React.SetStateAction<MessageKind[]>>
+) {
+  setHiddenKinds((current) => (current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]));
+}
+
+function applyMessageVisibility(conversations: DemoConversation[], hiddenKinds: MessageKind[]) {
+  if (hiddenKinds.length === 0) return conversations;
+
+  return conversations.map((conversation) => {
+    if (!conversation.messages) return conversation;
+    const messages = conversation.messages.filter((message) => !hiddenKinds.includes(message.kind));
+    const code = extractCodeSnippetsFromMessages(messages, conversation.id, conversation.title).length;
+    const tools = messages.filter((message) => message.kind === "tool_use" || message.kind === "tool_result").length;
+    const excerptSource = messages.find((message) => message.kind === "text" && message.body.trim()) ?? messages[0];
+
+    return {
+      ...conversation,
+      count: messages.length,
+      code,
+      tools,
+      messages,
+      excerpt: excerptSource ? excerptSource.body.slice(0, 180) : "No visible messages after current content filters."
+    };
+  });
 }
 
 function getConversationTags(conversation: DemoConversation) {
