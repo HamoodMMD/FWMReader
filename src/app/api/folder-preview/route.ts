@@ -131,14 +131,38 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
       const blocks = getContentBlocks(item);
       const time = findFirstTimeLabel(item) ?? String(index + 1).padStart(2, "0");
 
-      return blocks.map((block) => {
+      return blocks.flatMap((block) => {
         const body = normalizeMessageText(block);
-        return {
-          role,
-          time,
-          body,
-          kind: getMessageKind(block, role, body)
-        };
+        const memorySplit = splitMemoryContextMessage(body);
+        if (memorySplit) {
+          return [
+            {
+              role,
+              time,
+              body: memorySplit.context,
+              kind: "memory_context" as MessageKind
+            },
+            ...(memorySplit.userMessage
+              ? [
+                  {
+                    role: "user",
+                    time,
+                    body: memorySplit.userMessage,
+                    kind: "text" as MessageKind
+                  }
+                ]
+              : [])
+          ];
+        }
+
+        return [
+          {
+            role,
+            time,
+            body,
+            kind: getMessageKind(block, role, body)
+          }
+        ];
       });
     })
     .filter((message) => message.body.trim().length > 0);
@@ -225,6 +249,23 @@ function getMessageKind(value: unknown, role?: string, body = ""): MessageKind {
 
 function isMemoryContextText(text: string) {
   return /^\s*\[Memory context\]/i.test(text) || /^\s*Memory context\s*[-:]/i.test(text);
+}
+
+function splitMemoryContextMessage(text: string) {
+  if (!isMemoryContextText(text)) return undefined;
+
+  const markerPattern = /\bUser message:\s*/gi;
+  let marker: RegExpExecArray | null = null;
+  let lastMarker: RegExpExecArray | null = null;
+  while ((marker = markerPattern.exec(text)) !== null) {
+    lastMarker = marker;
+  }
+
+  if (!lastMarker || lastMarker.index === undefined) return { context: text.trim(), userMessage: "" };
+
+  const context = text.slice(0, lastMarker.index).trim();
+  const userMessage = text.slice(lastMarker.index + lastMarker[0].length).trim();
+  return { context, userMessage };
 }
 
 function extractCodeSnippetsFromMessages(messages: ConversationMessage[]) {

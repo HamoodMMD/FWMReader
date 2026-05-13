@@ -42,7 +42,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 type ViewName = "Recent" | "Timeline" | "Tags" | "Code Explorer" | "Activity" | "Backups";
-type ModalName = "import" | "watch" | "settings" | "backup" | "export" | null;
+type ModalName = "import" | "watch" | "settings" | "backup" | "export" | "help" | null;
 type MessageKind = "text" | "memory_context" | "thinking" | "tool_use" | "tool_result" | "signature" | "metadata";
 
 const messageKindOptions: Array<{ kind: MessageKind; label: string; description: string }> = [
@@ -53,6 +53,22 @@ const messageKindOptions: Array<{ kind: MessageKind; label: string; description:
   { kind: "tool_result", label: "Tool results", description: "Tool output returned into the conversation." },
   { kind: "signature", label: "Signatures", description: "Long verification signatures and opaque safety payloads." },
   { kind: "metadata", label: "Metadata noise", description: "Low-value internal or archive bookkeeping entries." }
+];
+
+const providerLocations = [
+  { provider: "Claude Code", location: "~/.claude/projects/", details: "Full conversation history, tool use, thinking, costs" },
+  { provider: "Gemini CLI", location: "~/.gemini/history/", details: "Conversation history with tool calls" },
+  {
+    provider: "Antigravity",
+    location: "~/.gemini/antigravity/",
+    details: "Conversation state under brain/ plus token monitor data under .token-monitor/rpc-cache/v1/"
+  },
+  { provider: "Codex CLI", location: "~/.codex/sessions/", details: "Session rollouts with agent responses" },
+  { provider: "Cline", location: "~/.cline/tasks/", details: "Task-based conversation history" },
+  { provider: "Cursor", location: "~/.cursor/", details: "Composer and chat conversations" },
+  { provider: "Aider", location: "Project directories", details: "Chat history and edit logs" },
+  { provider: "OpenCode", location: "~/.local/share/opencode/", details: "Conversation sessions and tool results" },
+  { provider: "ForgeCode", location: "~/.forge/.forge.db", details: "Conversation history from SQLite database" }
 ];
 
 interface ConversationMessage {
@@ -106,6 +122,16 @@ interface ArchiveStateSnapshot {
   datePreference: string;
 }
 
+interface ArchivePreferences {
+  hiddenTags: string[];
+  hiddenKinds: MessageKind[];
+  showMessageTimestamps: boolean;
+  showStatusToast: boolean;
+  persistArchiveOnRefresh: boolean;
+  darkMode: boolean;
+  datePreference: string;
+}
+
 const emptyConversation: DemoConversation = {
   id: "empty",
   sourceKey: "empty",
@@ -138,6 +164,7 @@ export function ArchiveWorkspace() {
   const [hiddenKinds, setHiddenKinds] = useState<MessageKind[]>(["memory_context", "thinking", "signature"]);
   const [showMessageTimestamps, setShowMessageTimestamps] = useState(true);
   const [showStatusToast, setShowStatusToast] = useState(false);
+  const [persistArchiveOnRefresh, setPersistArchiveOnRefresh] = useState(true);
   const [archiveLoaded, setArchiveLoaded] = useState(false);
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({
     "2026-May": true,
@@ -170,28 +197,35 @@ export function ArchiveWorkspace() {
     if (activeView === "Code Explorer") results = results.filter((conversation) => conversation.code > 0);
     if (activeView === "Timeline" && activeDay) results = results.filter((conversation) => conversation.date === activeDay);
     if (query) {
-      results = results.filter((conversation) =>
-        `${conversation.title} ${conversation.source} ${conversation.excerpt}`.toLowerCase().includes(query.toLowerCase())
-      );
+      results = results.filter((conversation) => conversationMatchesQuery(conversation, query));
     }
     return [...results].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.date.localeCompare(a.date));
   }, [activeDay, activeView, hiddenTags, query, visibleConversations]);
 
   useEffect(() => {
     let cancelled = false;
+    const preferences = loadArchivePreferences();
+    setHiddenTags(preferences.hiddenTags);
+    setHiddenKinds(preferences.hiddenKinds);
+    setShowMessageTimestamps(preferences.showMessageTimestamps);
+    setShowStatusToast(preferences.showStatusToast);
+    setPersistArchiveOnRefresh(preferences.persistArchiveOnRefresh);
+    setDatePreference(preferences.datePreference);
+    setDarkMode(preferences.darkMode);
+    document.documentElement.classList.toggle("dark", preferences.darkMode);
+
+    if (!preferences.persistArchiveOnRefresh) {
+      setArchiveLoaded(true);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     loadArchiveSnapshot()
       .then((snapshot) => {
         if (cancelled || !snapshot) return;
         setConversations(snapshot.conversations ?? []);
         setSelectedConversationId(snapshot.selectedConversationId ?? snapshot.conversations?.[0]?.id ?? null);
-        setHiddenTags(snapshot.hiddenTags ?? []);
-        setHiddenKinds(snapshot.hiddenKinds ?? ["memory_context", "thinking", "signature"]);
-        setShowMessageTimestamps(snapshot.showMessageTimestamps ?? true);
-        setShowStatusToast(snapshot.showStatusToast ?? false);
-        setDatePreference(snapshot.datePreference ?? "Prefer conversation timestamps");
-        setDarkMode(snapshot.darkMode ?? true);
-        document.documentElement.classList.toggle("dark", snapshot.darkMode ?? true);
         setToast("Archive restored from local browser storage");
       })
       .catch(() => {
@@ -209,6 +243,21 @@ export function ArchiveWorkspace() {
   useEffect(() => {
     if (!archiveLoaded) return;
 
+    saveArchivePreferences({
+      hiddenTags,
+      hiddenKinds,
+      showMessageTimestamps,
+      showStatusToast,
+      persistArchiveOnRefresh,
+      darkMode,
+      datePreference
+    });
+
+    if (!persistArchiveOnRefresh) {
+      void deleteArchiveSnapshot().catch(() => setToast("Could not clear saved archive cache"));
+      return;
+    }
+
     void saveArchiveSnapshot({
       conversations,
       selectedConversationId,
@@ -219,7 +268,18 @@ export function ArchiveWorkspace() {
       darkMode,
       datePreference
     }).catch(() => setToast("Local archive save failed"));
-  }, [archiveLoaded, conversations, darkMode, datePreference, hiddenKinds, hiddenTags, selectedConversationId, showMessageTimestamps, showStatusToast]);
+  }, [
+    archiveLoaded,
+    conversations,
+    darkMode,
+    datePreference,
+    hiddenKinds,
+    hiddenTags,
+    persistArchiveOnRefresh,
+    selectedConversationId,
+    showMessageTimestamps,
+    showStatusToast
+  ]);
 
   function notify(message: string) {
     if (!showStatusToast) return;
@@ -241,6 +301,15 @@ export function ArchiveWorkspace() {
     setDarkMode(next);
     document.documentElement.classList.toggle("dark", next);
     notify(next ? "Dark theme enabled" : "Light theme enabled");
+  }
+
+  function toggleArchivePersistence() {
+    setPersistArchiveOnRefresh((current) => {
+      const next = !current;
+      if (!next) void deleteArchiveSnapshot().catch(() => setToast("Could not clear saved archive cache"));
+      notify(next ? "Archive will survive refresh" : "Archive refresh persistence disabled");
+      return next;
+    });
   }
 
   function updateConversation(id: string, patch: Partial<DemoConversation>) {
@@ -330,6 +399,7 @@ export function ArchiveWorkspace() {
     if (command === "Open Code Explorer") setView("Code Explorer");
     if (command === "Open Activity") setView("Activity");
     if (command === "Create database backup") setModal("backup");
+    if (command === "Open Provider Help") setModal("help");
   }
 
   function exportMonthlyMarkdown() {
@@ -371,6 +441,7 @@ export function ArchiveWorkspace() {
     "Export monthly markdown book",
     "Open Code Explorer",
     "Open Activity",
+    "Open Provider Help",
     "Create database backup"
   ].filter((command) => command.toLowerCase().includes(commandQuery.toLowerCase()));
 
@@ -641,11 +712,35 @@ export function ArchiveWorkspace() {
                 <Trash2 className="h-4 w-4" />
                 Remove from app
               </Button>
+              <Button variant="ghost" className="w-full justify-start" onClick={() => setModal("help")}>
+                <FolderSearch className="h-4 w-4" />
+                Provider locations
+              </Button>
             </InspectorSection>
 
             <InspectorSection title="Repository Safety" icon={GitBranch}>
               <div className="rounded-md border border-primary/25 bg-primary/10 p-3 text-sm leading-6 text-primary">
                 Raw archives, databases, exports, backups, and embeddings are ignored by Git by default.
+              </div>
+            </InspectorSection>
+
+            <InspectorSection title="Local Storage" icon={DatabaseBackup}>
+              <div className="rounded-md border bg-panel-strong p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold">Keep after refresh</h3>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">Stores the current archive snapshot in local IndexedDB.</p>
+                  </div>
+                  <button
+                    className={cn(
+                      "rounded-sm border px-2 py-1 text-xs",
+                      persistArchiveOnRefresh ? "border-primary/40 bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+                    )}
+                    onClick={toggleArchivePersistence}
+                  >
+                    {persistArchiveOnRefresh ? "Enabled" : "Disabled"}
+                  </button>
+                </div>
               </div>
             </InspectorSection>
 
@@ -783,6 +878,11 @@ export function ArchiveWorkspace() {
                   onClick={() => setShowMessageTimestamps((current) => !current)}
                 />
                 <SettingRow
+                  label="Keep archive after refresh"
+                  value={persistArchiveOnRefresh ? "Enabled" : "Disabled"}
+                  onClick={toggleArchivePersistence}
+                />
+                <SettingRow
                   label="Status bubble"
                   value={showStatusToast ? "Shown" : "Hidden"}
                   onClick={() => setShowStatusToast((current) => !current)}
@@ -817,6 +917,7 @@ export function ArchiveWorkspace() {
                 </Button>
               </div>
             ) : null}
+            {modal === "help" ? <ProviderHelp /> : null}
           </AppModal>
         ) : null}
       </AnimatePresence>
@@ -1016,16 +1117,26 @@ function ActivityView({
       <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
         <section className="rounded-md border bg-panel p-4">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Daily Heatmap</h3>
-            <span className="text-xs text-muted-foreground">{analytics.heatmap.length} days</span>
+            <h3 className="text-sm font-semibold">Monthly Heatmap</h3>
+            <span className="text-xs text-muted-foreground">{analytics.heatmapMonths.length} months</span>
           </div>
-          <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1">
-            {analytics.heatmap.map((day) => (
-              <div
-                key={day.date}
-                title={`${day.date}: ${day.count} conversation${day.count === 1 ? "" : "s"}`}
-                className={cn("aspect-square rounded-sm border", heatmapTone(day.count, analytics.maxDailyCount))}
-              />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {analytics.heatmapMonths.map((month) => (
+              <div key={month.monthKey} className="rounded-md border bg-panel-strong p-3">
+                <div className="mb-2 flex items-center justify-between text-xs">
+                  <span className="font-medium">{month.label}</span>
+                  <span className="text-muted-foreground">{month.total}</span>
+                </div>
+                <div className="grid grid-cols-7 gap-1">
+                  {month.days.map((day) => (
+                    <div
+                      key={day.date}
+                      title={`${day.date}: ${day.count} conversation${day.count === 1 ? "" : "s"}`}
+                      className={cn("aspect-square rounded-[2px] border", day.inMonth ? heatmapTone(day.count, analytics.maxDailyCount) : "border-transparent bg-transparent")}
+                    />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         </section>
@@ -1119,16 +1230,7 @@ function buildArchiveAnalytics(conversations: DemoConversation[]) {
     }
   }
 
-  const sortedDays = Array.from(dayCounts.keys()).sort();
-  const firstDate = sortedDays[0] ? new Date(`${sortedDays[0]}T00:00:00.000Z`) : new Date();
-  const lastDate = sortedDays[sortedDays.length - 1] ? new Date(`${sortedDays[sortedDays.length - 1]}T00:00:00.000Z`) : new Date();
-  const heatmap: Array<{ date: string; count: number }> = [];
-  const cursor = new Date(firstDate);
-  while (cursor <= lastDate && heatmap.length < 140) {
-    const date = cursor.toISOString().slice(0, 10);
-    heatmap.push({ date, count: dayCounts.get(date) ?? 0 });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
+  const heatmapMonths = buildMonthlyHeatmap(dayCounts);
 
   return {
     totalConversations: conversations.length,
@@ -1137,10 +1239,44 @@ function buildArchiveAnalytics(conversations: DemoConversation[]) {
     totalToolMessages,
     activeDays: dayCounts.size,
     maxDailyCount: Math.max(1, ...Array.from(dayCounts.values())),
-    heatmap,
+    heatmapMonths,
     sourceCounts: Array.from(sourceCountsMap, ([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
     kindCounts: Array.from(kindCountsMap, ([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count)
   };
+}
+
+function buildMonthlyHeatmap(dayCounts: Map<string, number>) {
+  const monthFormatter = new Intl.DateTimeFormat("en", { month: "long", year: "numeric", timeZone: "UTC" });
+  const monthKeys = Array.from(
+    new Set(Array.from(dayCounts.keys()).map((date) => date.slice(0, 7)))
+  ).sort();
+  const keys = monthKeys.length > 0 ? monthKeys.slice(-12) : [new Date().toISOString().slice(0, 7)];
+
+  return keys.map((monthKey) => {
+    const [year, month] = monthKey.split("-").map(Number);
+    const firstDay = new Date(Date.UTC(year, month - 1, 1));
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const offset = firstDay.getUTCDay();
+    const cells: Array<{ date: string; count: number; inMonth: boolean }> = [];
+
+    for (let index = 0; index < offset; index += 1) {
+      cells.push({ date: `${monthKey}-pad-start-${index}`, count: 0, inMonth: false });
+    }
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const date = `${monthKey}-${String(day).padStart(2, "0")}`;
+      cells.push({ date, count: dayCounts.get(date) ?? 0, inMonth: true });
+    }
+    while (cells.length % 7 !== 0) {
+      cells.push({ date: `${monthKey}-pad-end-${cells.length}`, count: 0, inMonth: false });
+    }
+
+    return {
+      monthKey,
+      label: monthFormatter.format(firstDay),
+      total: cells.reduce((sum, day) => sum + day.count, 0),
+      days: cells
+    };
+  });
 }
 
 function buildTimelineGroups(conversations: DemoConversation[]) {
@@ -1160,6 +1296,33 @@ function buildTimelineGroups(conversations: DemoConversation[]) {
   return Array.from(groups.values())
     .map((group) => ({ ...group, days: group.days.sort((a, b) => b.localeCompare(a)) }))
     .sort((a, b) => (b.days[0] ?? "").localeCompare(a.days[0] ?? ""));
+}
+
+function conversationMatchesQuery(conversation: DemoConversation, query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+
+  const messageText = conversation.messages?.map((message) => `${message.role} ${message.kind} ${message.body}`).join("\n") ?? "";
+  const codeText = extractCodeSnippetsFromConversation(conversation)
+    .map((snippet) => `${snippet.language} ${snippet.title} ${snippet.code}`)
+    .join("\n");
+  const entityText = extractEntities(conversation).map((entity) => entity.label).join("\n");
+  const tagText = getConversationTags(conversation).join(" ");
+  const haystack = [
+    conversation.title,
+    conversation.source,
+    conversation.date,
+    conversation.excerpt,
+    messageText,
+    codeText,
+    entityText,
+    tagText,
+    conversation.rawPreview ?? ""
+  ]
+    .join("\n")
+    .toLowerCase();
+
+  return haystack.includes(needle);
 }
 
 function parseImportPayload(text: string, fileName: string) {
@@ -1214,14 +1377,38 @@ function extractConversationMessages(payload: unknown): ConversationMessage[] {
       const blocks = getContentBlocks(item);
       const time = findFirstTimeLabel(item) ?? String(index + 1).padStart(2, "0");
 
-      return blocks.map((block) => {
+      return blocks.flatMap((block) => {
         const body = normalizeMessageText(block);
-        return {
-          role,
-          time,
-          body,
-          kind: getMessageKind(block, role, body)
-        };
+        const memorySplit = splitMemoryContextMessage(body);
+        if (memorySplit) {
+          return [
+            {
+              role,
+              time,
+              body: memorySplit.context,
+              kind: "memory_context" as MessageKind
+            },
+            ...(memorySplit.userMessage
+              ? [
+                  {
+                    role: "user",
+                    time,
+                    body: memorySplit.userMessage,
+                    kind: "text" as MessageKind
+                  }
+                ]
+              : [])
+          ];
+        }
+
+        return [
+          {
+            role,
+            time,
+            body,
+            kind: getMessageKind(block, role, body)
+          }
+        ];
       });
     })
     .filter((message) => message.body.trim().length > 0);
@@ -1320,6 +1507,23 @@ function isMemoryContextText(text: string) {
   return /^\s*\[Memory context\]/i.test(text) || /^\s*Memory context\s*[-:]/i.test(text);
 }
 
+function splitMemoryContextMessage(text: string) {
+  if (!isMemoryContextText(text)) return undefined;
+
+  const markerPattern = /\bUser message:\s*/gi;
+  let marker: RegExpExecArray | null = null;
+  let lastMarker: RegExpExecArray | null = null;
+  while ((marker = markerPattern.exec(text)) !== null) {
+    lastMarker = marker;
+  }
+
+  if (!lastMarker || lastMarker.index === undefined) return { context: text.trim(), userMessage: "" };
+
+  const context = text.slice(0, lastMarker.index).trim();
+  const userMessage = text.slice(lastMarker.index + lastMarker[0].length).trim();
+  return { context, userMessage };
+}
+
 function extractCodeSnippetsFromText(text: string, conversationId: string, source: string): CodeSnippet[] {
   const snippets: CodeSnippet[] = [];
   const pattern = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
@@ -1405,6 +1609,35 @@ function simpleHash(text: string) {
   return String(hash);
 }
 
+function defaultArchivePreferences(): ArchivePreferences {
+  return {
+    hiddenTags: [],
+    hiddenKinds: ["memory_context", "thinking", "signature"],
+    showMessageTimestamps: true,
+    showStatusToast: false,
+    persistArchiveOnRefresh: true,
+    darkMode: true,
+    datePreference: "Prefer conversation timestamps"
+  };
+}
+
+function loadArchivePreferences(): ArchivePreferences {
+  if (typeof localStorage === "undefined") return defaultArchivePreferences();
+  try {
+    return {
+      ...defaultArchivePreferences(),
+      ...(JSON.parse(localStorage.getItem("fwm-archive-preferences") ?? "{}") as Partial<ArchivePreferences>)
+    };
+  } catch {
+    return defaultArchivePreferences();
+  }
+}
+
+function saveArchivePreferences(preferences: ArchivePreferences) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem("fwm-archive-preferences", JSON.stringify(preferences));
+}
+
 function openArchiveDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("fwm-claude-chat-archive-viewer", 1);
@@ -1435,6 +1668,20 @@ async function saveArchiveSnapshot(snapshot: ArchiveStateSnapshot) {
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction("snapshots", "readwrite");
     transaction.objectStore("snapshots").put(snapshot, "active");
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+async function deleteArchiveSnapshot() {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openArchiveDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction("snapshots", "readwrite");
+    transaction.objectStore("snapshots").delete("active");
     transaction.oncomplete = () => {
       database.close();
       resolve();
@@ -1514,7 +1761,8 @@ function modalTitle(modal: Exclude<ModalName, null>) {
     watch: "Watch Folder",
     settings: "Settings",
     backup: "Backup Export",
-    export: "Markdown Export"
+    export: "Markdown Export",
+    help: "Provider Chat Locations"
   };
   return titles[modal];
 }
@@ -1764,6 +2012,35 @@ function StatusToast({ message }: { message: string }) {
     <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-md border bg-panel-strong px-3 py-2 text-sm shadow-soft-panel">
       <CheckCircle2 className="h-4 w-4 text-primary" />
       {message}
+    </div>
+  );
+}
+
+function ProviderHelp() {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm leading-6 text-muted-foreground">
+        Common local locations for AI assistant archives. Use these paths as starting points for folder import; the app reads copies into its local archive and does not modify original files.
+      </p>
+      <div className="overflow-hidden rounded-md border">
+        <div className="grid grid-cols-[130px_180px_minmax(0,1fr)] bg-muted px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">
+          <span>Provider</span>
+          <span>Data location</span>
+          <span>What you get</span>
+        </div>
+        <div className="divide-y">
+          {providerLocations.map((provider) => (
+            <div key={provider.provider} className="grid grid-cols-[130px_180px_minmax(0,1fr)] gap-3 px-3 py-3 text-sm">
+              <span className="font-medium">{provider.provider}</span>
+              <code className="rounded-sm bg-background px-2 py-1 text-xs">{provider.location}</code>
+              <span className="text-muted-foreground">{provider.details}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="rounded-md border border-primary/25 bg-primary/10 p-3 text-xs leading-5 text-primary">
+        Privacy note: browsing or importing these locations does not change source files, so original filesystem modified dates stay intact.
+      </div>
     </div>
   );
 }
